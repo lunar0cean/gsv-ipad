@@ -1,0 +1,11 @@
+# 模型、角色音频、合成结果、下载缓存都只留在本机，不进仓库
+work/
+tools/.venv/
+__pycache__/
+*.pyc
+
+# Xcode
+build/
+DerivedData/
+*.xcodeproj/
+*.ipa

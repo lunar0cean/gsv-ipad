@@ -1,0 +1,64 @@
+name: 编译 iPad 安装包
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "App/**"
+      - "project.yml"
+      - ".github/workflows/build.yml"
+
+# 要把安装包和日志挂到 Release 上，所以需要写权限
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: 查看 Xcode 环境
+        run: xcodebuild -version
+      - name: 生成 Xcode 工程
+        run: |
+          brew install xcodegen
+          xcodegen generate
+      - name: 编译未签名设备版本
+        run: |
+          set -o pipefail
+          xcodebuild -project GSVPad.xcodeproj -scheme GSVPad \
+            -configuration Release -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build 2>&1 | tee build.log
+          mkdir -p build/ipa/Payload
+          cp -R build/Build/Products/Release-iphoneos/GSVPad.app build/ipa/Payload/
+          cd build/ipa
+          zip -qr GSVPad-unsigned.ipa Payload
+      # 仓库是公开的，Release 里的文件不登录也能下载，电脑上不用装 GitHub 工具就能取到安装包和报错
+      - name: 发布安装包和日志
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          touch build.log
+          grep -nE "error:|warning: unre|BUILD (SUCCEEDED|FAILED)|\*\* " build.log | head -200 > errors.txt || true
+          echo "commit=$GITHUB_SHA run=$GITHUB_RUN_ID status=${{ job.status }} time=$(date -u +%FT%TZ)" > build-info.txt
+          files=(build-info.txt errors.txt build.log)
+          if [ -f build/ipa/GSVPad-unsigned.ipa ]; then
+            files+=(build/ipa/GSVPad-unsigned.ipa)
+          fi
+          gh release view ci >/dev/null 2>&1 || \
+            gh release create ci --prerelease --title "自动编译产物" --notes "每次推送后自动更新。build-info.txt 记着对应的提交。"
+          gh release upload ci "${files[@]}" --clobber
+      - name: 保留未签名 IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: GSVPad-unsigned
+          path: build/ipa/GSVPad-unsigned.ipa
+          retention-days: 14
