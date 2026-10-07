@@ -6,6 +6,8 @@
 
 仓库里只有代码和开源词典数据。模型、角色音频、合成结果都在本机的 `work\` 里，不进仓库。
 
+接手这个项目，或者要把它并入别的 iOS 程序，先读 [HANDOFF.md](HANDOFF.md)。
+
 ## 做法
 
 | 环节 | 在哪里跑 | 怎么做 |
@@ -23,7 +25,7 @@
 | 模型转成 ONNX，并对照原版验证声音 | 完成 |
 | 日文文本处理 | 完成。JS 移植与原版逐音素一致（40 句样本）；jpreprocess 给出的标签在这些样本上也与电脑上的 OpenJTalk 完全一致 |
 | 中文文本处理 | 完成。JS 移植与原版逐音素一致（121 句样本，另有 2998 句随机生成的压力测试）。英文单词暂时会被跳过 |
-| App：选角色、输入文字、边合成边播放、导出音频 | 在 iPad 模拟器上通过端到端冒烟测试（见下）；真机上还没运行过，速度待测 |
+| App：选角色、输入文字、边合成边播放、导出音频 | 0.1.1 已在 A16 iPad 上跑通，能合成中文和日文；合成速度还没有实测数字。每次推送都在 iPad 模拟器上跑端到端冒烟测试（见下） |
 | 中文语调模型（RoBERTa） | 未接入，目标文本的 BERT 特征暂用全零 |
 
 每次推送后 GitHub 会在 iPad 模拟器上跑 `Tests\SmokeTests.swift`：
@@ -89,5 +91,5 @@ node D:\ios\gsv-ipad\frontend\test\test_zh.js
 
 1. 每次推送后 GitHub 自动编译。安装包在 [ci Release](https://github.com/lunar0cean/gsv-ipad/releases/tag/ci) 的 `GSVPad-unsigned.ipa`；同一处的 `build-info.txt` 记着对应的提交，`errors.txt` 是报错摘要，`parity.txt` 是文本处理的对照结果，`sim-test.txt` 是模拟器测试的结果。
 2. 用 Sideloadly 和自己的 Apple ID 签名安装。
-3. 用 iTunes 的「文件共享」或 iPad 的「文件」App，把 `work\ipad\` 里的 `models` 和 `voices` 两个文件夹拷进 App 的文件夹。
+3. 在电脑的「Apple 设备」里点「文件」，选「GPT Sovits」，把 `work\ipad\` 里 `models` 和 `voices` 两个文件夹中的文件加进去：用「添加文件」按钮，或者拖到 App 的名字上。往文档列表里拖是拖不进去的。
 4. 打开 App，选角色、输入文字、点「生成」。
