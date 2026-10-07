@@ -22,7 +22,7 @@
 | --- | --- |
 | 模型转成 ONNX，并对照原版验证声音 | 完成 |
 | 日文文本处理 | 完成。JS 移植与原版逐音素一致（40 句样本）；jpreprocess 与原版 OpenJTalk 的差异由 GitHub 上的对照测试给出 |
-| 中文文本处理 | 进行中 |
+| 中文文本处理 | 完成。JS 移植与原版逐音素一致（121 句样本，另有 2998 句随机生成的压力测试）。英文单词暂时会被跳过 |
 | App：选角色、输入文字、边合成边播放、导出音频 | 已写好，等真机验证 |
 | 中文语调模型（RoBERTa） | 未接入，目标文本的 BERT 特征暂用全零 |
 
@@ -53,7 +53,8 @@ Python 环境在 `tools\.venv`，由 `D:\k\env` 创建并共用它的包，另�
 | `convert_models.py` | 本机底模（safetensors）→ `work\onnx\` 的 ONNX 模型 |
 | `export_pack.py bundle` | 按 `work\presets.json` 导出角色包，并把模型一起集中到 `work\ipad\` |
 | `export_pack.py verify` | 只用 `work\ipad\` 里的文件、按 iPad 的做法各合成一句，存到 `work\out\verify\` |
-| `make_golden.py` | 生成符号表和文本处理的对照样本 |
+| `make_golden.py ja`、`zh` | 生成符号表和文本处理的对照样本（两种语言要分开运行） |
+| `make_zh_data.py` | 从本机的 jieba_fast、pypinyin 导出中文词典数据到 `App\Frontend\` |
 | `ref_pipeline.py` | 电脑上的参考流程，`OnnxSynth` 与 App 里的 `SynthEngine` 一一对应 |
 | `compare.py`、`probe_first_sentence.py` | 原版与 ONNX 的对比；漏读第一句的检查 |
 
@@ -61,6 +62,9 @@ Python 环境在 `tools\.venv`，由 `D:\k\env` 创建并共用它的包，另�
 
 ```powershell
 node D:\ios\gsv-ipad\frontend\test\test_ja.js
+```n
+```powershell
+node D:\ios\gsv-ipad\frontend\test\test_zh.js
 ```
 
 实现上要留意的几点：

@@ -95,10 +95,15 @@ final class AppModel: ObservableObject {
     private func warmUp() {
         guard let directory = modelDirectory else { return }
         status = "正在载入模型…"
+        let needsChinese = presets.contains { $0.language == "zh" }
         worker.async { [weak self] in
             guard let self else { return }
             do {
-                _ = try self.loadIfNeeded(directory: directory)
+                let (frontend, _) = try self.loadIfNeeded(directory: directory)
+                if needsChinese {
+                    // 中文词典第一次用到时要花几秒载入，趁现在做掉
+                    _ = try? frontend.prepare("你好。", language: "zh")
+                }
                 DispatchQueue.main.async {
                     if !self.busy {
                         self.status = "就绪"
