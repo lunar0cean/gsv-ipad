@@ -53,6 +53,7 @@ jobs:
           {
             echo "== JS 移植对照原版（日文）"; node frontend/test/test_ja.js | tail -3
             echo "== JS 移植对照原版（中文）"; node frontend/test/test_zh.js | tail -3
+            echo "== 切句"; node frontend/test/test_prepare.js | tail -5
             echo "== jpreprocess 对照电脑上的 OpenJTalk"; node frontend/test/test_ja.js native/target/release/gsv-labels
           } > parity.txt 2>&1 || true
           tail -5 parity.txt

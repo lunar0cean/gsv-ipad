@@ -172,11 +172,20 @@ var GSV = (function () {
     });
   }
 
+  // 引号不发音，两种语言的规范化最后都会把它们去掉。必须在切句之前就去掉：
+  // 否则像「……。」这样的一行，末尾的「」」会被当成没有标点收尾的内容，切出一个读不出声音的片段
+  var QUOTES = /[「」『』“”‘’"'＂＇]/g;
+  var SILENT_PHONES = PUNCTUATION.concat(["UNK", "SP", "SP2", "SP3", "_"]);
+
+  function isSpeakable(phones) {
+    return phones.some(function (ph) { return SILENT_PHONES.indexOf(ph) < 0; });
+  }
+
   // 整段文字 -> 一组可以逐个合成的片段。每个片段前面加一个句号，减少「漏读很短的第一句」
   function prepare(text, lang) {
     var segments = [];
     text.split(/\n+/).forEach(function (line) {
-      line = line.trim();
+      line = line.replace(QUOTES, "").trim();
       if (line.length === 0) {
         return;
       }
@@ -185,6 +194,9 @@ var GSV = (function () {
       }
       cutText(line, CUT_MIN_LENGTH).forEach(function (cut) {
         var result = g2p("。" + cut, lang);
+        if (!isSpeakable(result.phones)) {
+          return;  // 只有标点或符号的片段，模型什么都生成不出来，不送去合成
+        }
         var last = cut.charAt(cut.length - 1);
         var scale = Object.prototype.hasOwnProperty.call(CUT_MUTE_SCALE, last) ? CUT_MUTE_SCALE[last] : 1.0;
         segments.push({ text: cut, ids: result.ids, pause: CUT_MUTE_SECONDS * scale });
