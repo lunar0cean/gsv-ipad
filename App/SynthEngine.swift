@@ -5,13 +5,8 @@ struct SynthStats {
     var phones = 0
     var tokens = 0
     var attempts = 0
-    var encoderSeconds = 0.0
-    var decoderSeconds = 0.0
-    var vocoderSeconds = 0.0
+    var seconds = 0.0
     var audioSeconds = 0.0
-
-    var totalSeconds: Double { encoderSeconds + decoderSeconds + vocoderSeconds }
-    var realTimeFactor: Double { audioSeconds > 0 ? totalSeconds / audioSeconds : 0 }
 }
 
 enum SynthError: LocalizedError {
@@ -28,7 +23,7 @@ enum SynthError: LocalizedError {
     }
 }
 
-/// 文本特征 + 角色包 -> 波形。对应电脑端 tools/ref_pipeline.py 里的 OnnxSynth。
+/// 音素 + 角色包 -> 波形。对应电脑端 tools/ref_pipeline.py 里的 OnnxSynth。
 final class SynthEngine {
     static let modelFiles = [
         "t2s_encoder_fp32.onnx", "t2s_encoder_fp32.bin",
@@ -37,6 +32,7 @@ final class SynthEngine {
     ]
     static let sampleRate = 32_000
 
+    private static let bertWidth = 1024
     private static let eos: Int64 = 1024
     private static let maxSteps = 1000
     private static let maxAttempts = 3
@@ -85,17 +81,24 @@ final class SynthEngine {
         self.stageOutputSet = Set(stageOutputs)
     }
 
-    func synthesize(voice: TensorPack, text: TensorPack) throws -> (samples: [Float], stats: SynthStats) {
+    /// `isCancelled` 在解码循环的每一步都会被问一次；返回 true 时本次合成返回 nil。
+    func synthesize(voice: TensorPack, phonemes: [Int64],
+                    isCancelled: () -> Bool) throws -> (samples: [Float], stats: SynthStats)? {
+        let clock = CFAbsoluteTimeGetCurrent()
         var stats = SynthStats()
-        stats.phones = text.shape(of: "text_seq").last ?? 0
-        let textSeq = try text.value("text_seq")
+        stats.phones = phonemes.count
+        let textSeq = try SynthEngine.int64Value(phonemes, shape: [1, phonemes.count])
 
         // 语义数量远少于音素数量说明提前结束了，这一步便宜，直接重来
         var tokens: [Int64] = []
         for attempt in 1...SynthEngine.maxAttempts {
             stats.attempts = attempt
-            tokens = try semanticTokens(voice: voice, text: text, textSeq: textSeq, stats: &stats)
-            if Double(tokens.count) >= Double(stats.phones) * 0.8 {
+            guard let generated = try semanticTokens(voice: voice, textSeq: textSeq, phoneCount: phonemes.count,
+                                                     isCancelled: isCancelled) else {
+                return nil
+            }
+            tokens = generated
+            if Double(tokens.count) >= Double(phonemes.count) * 0.8 {
                 break
             }
         }
@@ -104,7 +107,6 @@ final class SynthEngine {
         }
         stats.tokens = tokens.count
 
-        let clock = CFAbsoluteTimeGetCurrent()
         let inputs: [String: ORTValue] = [
             "text_seq": textSeq,
             "pred_semantic": try SynthEngine.int64Value(tokens, shape: [1, 1, tokens.count]),
@@ -117,19 +119,24 @@ final class SynthEngine {
         }
         let audioData = try audio.tensorData() as Data
         let samples: [Float] = audioData.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
-        stats.vocoderSeconds = CFAbsoluteTimeGetCurrent() - clock
+        stats.seconds = CFAbsoluteTimeGetCurrent() - clock
         stats.audioSeconds = Double(samples.count) / Double(SynthEngine.sampleRate)
         return (samples, stats)
     }
 
-    private func semanticTokens(voice: TensorPack, text: TensorPack, textSeq: ORTValue,
-                                stats: inout SynthStats) throws -> [Int64] {
-        var clock = CFAbsoluteTimeGetCurrent()
+    private func semanticTokens(voice: TensorPack, textSeq: ORTValue, phoneCount: Int,
+                                isCancelled: () -> Bool) throws -> [Int64]? {
+        // 目标文本的 BERT 特征先用全零（日文本来就是全零；中文以后可以接上 RoBERTa）
+        guard let zeros = NSMutableData(length: phoneCount * SynthEngine.bertWidth * MemoryLayout<Float>.stride) else {
+            throw SynthError.missingOutput("text_bert")
+        }
+        let textBert = try ORTValue(tensorData: zeros, elementType: .float,
+                                    shape: [NSNumber(value: phoneCount), NSNumber(value: SynthEngine.bertWidth)])
         let encoderInputs: [String: ORTValue] = [
             "ref_seq": try voice.value("ref_seq"),
             "text_seq": textSeq,
             "ref_bert": try voice.value("ref_bert"),
-            "text_bert": try text.value("text_bert"),
+            "text_bert": textBert,
             "ssl_content": try voice.value("ssl_content"),
         ]
         let encoded = try encoder.run(withInputs: encoderInputs, outputNames: ["x", "prompts"], runOptions: nil)
@@ -140,8 +147,6 @@ final class SynthEngine {
             throw SynthError.missingOutput("prompts")
         }
         let promptLength = try prompts.tensorTypeAndShapeInfo().shape.last?.intValue ?? 0
-        stats.encoderSeconds += CFAbsoluteTimeGetCurrent() - clock
-        clock = CFAbsoluteTimeGetCurrent()
 
         let first = try firstStage.run(withInputs: ["x": x, "prompts": prompts],
                                        outputNames: Set(firstOutputs), runOptions: nil)
@@ -150,6 +155,9 @@ final class SynthEngine {
         // 每一步的输出里有 48 个随长度增长的缓存张量，必须每步清一次自动释放池，否则内存会一路涨上去
         var stopped = false
         for _ in 0..<SynthEngine.maxSteps {
+            if isCancelled() {
+                return nil
+            }
             stopped = try autoreleasepool {
                 var inputs = [String: ORTValue](minimumCapacity: stageInputs.count)
                 for (name, value) in zip(stageInputs, state) {
@@ -172,7 +180,6 @@ final class SynthEngine {
         if stopped, !generated.isEmpty {
             generated.removeLast()  // 触发结束的那一个不算
         }
-        stats.decoderSeconds += CFAbsoluteTimeGetCurrent() - clock
         return generated.filter { $0 < SynthEngine.eos }
     }
 

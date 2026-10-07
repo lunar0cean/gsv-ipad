@@ -1,47 +1,46 @@
-"""导出 iPad 端用的数据包，并把要拷到 iPad 的文件集中到 work\\ipad\\。
+"""导出 iPad 端用的角色包，并把要拷到 iPad 的文件集中到 work\\ipad\\。
 
-数据包（.gsvpack）是一个很简单的容器，Swift 端不依赖第三方库就能读：
+角色包（.gsvpack）是一个很简单的容器，Swift 端不依赖第三方库就能读：
     4 字节  "GSVP"
     4 字节  小端 uint32，头部长度 N
     N 字节  UTF-8 JSON：{"kind", "meta", "tensors": [{"name", "dtype", "shape", "offset", "length"}]}
     之后    各张量的原始字节（小端），offset 从这里算起
+里面是参考音频算出来的 ref_seq、ref_bert、ssl_content、ge、ge_advanced。
 
-两种包：
-    voice  角色包：ref_seq、ref_bert、ssl_content、ge、ge_advanced
-    text   文本包：text_seq、text_bert（第四阶段在 iPad 上实现文本处理后就不再需要）
+要导出哪些角色写在 work\\presets.json 里（这个文件只在本机，不进仓库），每项：
+    {"file": "1_名字", "name": "界面上显示的名字", "lang": "ja 或 zh", "wav": "参考音频", "text": "参考音频的文字"}
+音色和语气用同一条参考音频。文件名前面的序号决定 App 里的显示顺序。
 
 用法：
-    python export_pack.py bundle    # 生成基准测试用的一组角色包、文本包，并拷贝模型
-    python export_pack.py verify    # 只用 work\\ipad\\ 里的文件合成一遍，确认这些文件是自足的
+    python export_pack.py bundle    # 生成角色包并拷贝模型到 work\\ipad\\
+    python export_pack.py verify    # 只用 work\\ipad\\ 里的文件、按 iPad 的做法各合成一句，存到 work\\out\\verify\\
 """
 import argparse
 import json
 import os
 import shutil
 import struct
+import subprocess
 import sys
 
 import numpy as np
 import soundfile as sf
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ref_pipeline import GSV_ROOT, ONNX_DIR, ROOT, OnnxSynth  # noqa: E402
+from ref_pipeline import ONNX_DIR, ROOT, OnnxSynth  # noqa: E402
 
 IPAD_DIR = os.path.join(ROOT, "work", "ipad")
+PRESETS_FILE = os.path.join(ROOT, "work", "presets.json")
 MODEL_FILES = [
     "t2s_encoder_fp32.onnx", "t2s_encoder_fp32.bin",
     "t2s_first_stage_decoder_fp32.onnx", "t2s_stage_decoder_fp32.onnx", "t2s_shared_fp32.bin",
     "vits_fp32.onnx", "vits_fp32.bin",
 ]
 DTYPES = {"i64": np.int64, "f32": np.float32}
-
-BENCH_VOICES = [r"丹瑾\吃惊", r"小町鸫\日常对话01", r"神户小鸟\打招呼01"]
-BENCH_TEXTS = [
-    ("zh", "今天的天气真不错，我们一起去海边走走吧。"),
-    ("zh", "对不起，这件事是我没有考虑周全，下次一定会提前告诉你，不会再让你白白等这么久了。"),
-    ("ja", "今日はいい天気ですね。一緒に海まで散歩しませんか。"),
-    ("ja", "おはようございます。昨日はよく眠れましたか。"),
-]
+VERIFY_TEXTS = {
+    "ja": "今日はいい天気ですね。一緒に海まで散歩しませんか。",
+    "zh": "今天的天气真不错，我们一起去海边走走吧。",
+}
 
 
 def write_pack(path: str, kind: str, meta: dict, tensors: dict) -> None:
@@ -79,26 +78,42 @@ def read_pack(path: str):
     return header["kind"], header["meta"], tensors
 
 
+def run_isolated(args: list, attempts: int = 3) -> None:
+    """在单独的进程里跑一步，跑完内存全部还给系统。电脑内存紧张时特征提取会因为分配不到内存而崩溃
+    （报「not enough memory」或访问冲突），所以失败时自动重试；-X faulthandler 会把崩溃位置打出来。"""
+    command = [sys.executable, "-X", "faulthandler", os.path.abspath(__file__), *args]
+    for attempt in range(1, attempts + 1):
+        code = subprocess.run(command).returncode
+        if code == 0:
+            return
+        print(f"第 {attempt} 次运行 {' '.join(args)} 失败，退出码 {code}", flush=True)
+    raise SystemExit(f"{' '.join(args)} 连续 {attempts} 次失败")
+
+
+def load_presets() -> list:
+    with open(PRESETS_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def export_voice(index: int) -> None:
+    from ref_pipeline import Frontend, build_voice
+
+    preset = load_presets()[index]
+    # 中文 RoBERTa 载入后占 1.3GB 内存，只有中文参考文本才用得到
+    frontend = Frontend(use_bert=preset["lang"] == "zh")
+    voice = build_voice(frontend, preset["wav"], preset["text"], preset["wav"], preset["lang"])
+    path = os.path.join(IPAD_DIR, "voices", preset["file"] + ".gsvpack")
+    write_pack(path, "voice", {"name": preset["name"], "lang": preset["lang"]}, voice)
+    seconds = voice["ssl_content"].shape[2] / 50
+    print(f"角色包 {os.path.getsize(path) / 1e6:5.2f} MB  参考音频约 {seconds:.1f}s  {preset['name']}", flush=True)
+
+
 def bundle() -> None:
-    from ref_pipeline import PUNCTUATION, Frontend, build_voice, read_preset
+    shutil.rmtree(os.path.join(IPAD_DIR, "voices"), ignore_errors=True)
+    shutil.rmtree(os.path.join(IPAD_DIR, "tests"), ignore_errors=True)
 
-    frontend = Frontend(use_bert=True)
-    for preset in BENCH_VOICES:
-        prompt_wav, prompt_text, spk_wav, lang = read_preset(os.path.join(GSV_ROOT, "presets", preset))
-        character, emotion = preset.split("\\")
-        voice = build_voice(frontend, prompt_wav, prompt_text, spk_wav, lang)
-        path = os.path.join(IPAD_DIR, "voices", f"{character}_{emotion}.gsvpack")
-        write_pack(path, "voice", {"name": f"{character} · {emotion}", "lang": lang or "", "prompt_text": prompt_text},
-                   voice)
-        print(f"角色包 {os.path.getsize(path) / 1e6:5.2f} MB  {path}")
-
-    for i, (lang, text) in enumerate(BENCH_TEXTS, 1):
-        text = text if text[-1] in PUNCTUATION else text + "。"
-        # 前导句号用来减少「漏读很短的第一句」，见 README
-        seq, bert, norm = frontend("。" + text, lang)
-        path = os.path.join(IPAD_DIR, "tests", f"{i:02d}_{lang}.gsvpack")
-        write_pack(path, "text", {"name": text, "lang": lang, "norm_text": norm}, {"text_seq": seq, "text_bert": bert})
-        print(f"文本包 {os.path.getsize(path) / 1e6:5.2f} MB  {path}")
+    for index in range(len(load_presets())):
+        run_isolated(["voice", str(index)])
 
     os.makedirs(os.path.join(IPAD_DIR, "models"), exist_ok=True)
     for name in MODEL_FILES:
@@ -107,24 +122,42 @@ def bundle() -> None:
     print(f"要拷到 iPad 的文件共 {total / 1e6:.0f} MB，在 {IPAD_DIR}")
 
 
-def verify() -> None:
+def verify(lang: str) -> None:
+    """iPad 上目标文本的 BERT 特征是全零，这里也用全零，合成结果就是 iPad 上该有的声音。"""
+    from ref_pipeline import Frontend
+
+    frontend = Frontend(use_bert=False)
     synth = OnnxSynth(onnx_dir=os.path.join(IPAD_DIR, "models"))
-    voices = sorted(os.listdir(os.path.join(IPAD_DIR, "voices")))
-    tests = sorted(os.listdir(os.path.join(IPAD_DIR, "tests")))
     out_dir = os.path.join(ROOT, "work", "out", "verify")
     os.makedirs(out_dir, exist_ok=True)
-    for vi, test in enumerate(tests):
-        _, vmeta, voice = read_pack(os.path.join(IPAD_DIR, "voices", voices[vi % len(voices)]))
-        _, tmeta, text = read_pack(os.path.join(IPAD_DIR, "tests", test))
-        audio, stat = synth(voice, text["text_seq"], text["text_bert"])
+    voices_dir = os.path.join(IPAD_DIR, "voices")
+    for file in sorted(os.listdir(voices_dir)):
+        _, meta, voice = read_pack(os.path.join(voices_dir, file))
+        if meta["lang"] != lang:
+            continue
+        text = VERIFY_TEXTS[meta["lang"]]
+        seq, _, _ = frontend("。" + text, meta["lang"])
+        bert = np.zeros((seq.shape[1], 1024), dtype=np.float32)
+        audio, stat = synth(voice, seq, bert)
         dur = len(audio) / 32000
-        sf.write(os.path.join(out_dir, test.replace(".gsvpack", ".wav")), audio / max(1.0, float(np.abs(audio).max())),
+        sf.write(os.path.join(out_dir, file.replace(".gsvpack", ".wav")), audio / max(1.0, float(np.abs(audio).max())),
                  32000)
-        print(f"{vmeta['name']} | {tmeta['name']}\n    音素 {text['text_seq'].shape[1]}，语义 {stat['tokens']}，"
-              f"音频 {dur:.2f}s，实时率 {(stat['t2s_s'] + stat['vits_s']) / dur:.2f}")
+        print(f"{meta['name']} | {text}\n    音素 {seq.shape[1]}，语义 {stat['tokens']}，音频 {dur:.2f}s，"
+              f"实时率 {(stat['t2s_s'] + stat['vits_s']) / dur:.2f}")
+    print("已保存到", out_dir)
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("command", choices=["bundle", "verify"])
-    {"bundle": bundle, "verify": verify}[ap.parse_args().command]()
+    ap.add_argument("command", choices=["bundle", "verify", "voice"])
+    ap.add_argument("arg", nargs="?", help="voice：角色序号；verify：ja 或 zh，不填则两种都跑")
+    args = ap.parse_args()
+    if args.command == "bundle":
+        bundle()
+    elif args.command == "voice":
+        export_voice(int(args.arg))
+    elif args.arg:
+        verify(args.arg)
+    else:
+        for lang in VERIFY_TEXTS:
+            run_isolated(["verify", lang])

@@ -6,6 +6,8 @@ on:
     branches: [main]
     paths:
       - "App/**"
+      - "native/**"
+      - "frontend/**"
       - "project.yml"
       - ".github/workflows/build.yml"
 
@@ -20,11 +22,34 @@ concurrency:
 jobs:
   build:
     runs-on: macos-15
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-      - name: 查看 Xcode 环境
-        run: xcodebuild -version
+      - name: 查看环境
+        run: |
+          xcodebuild -version
+          rustc --version
+          node --version
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native
+      - name: 编译 Rust 库（日文分词与重音）
+        run: |
+          set -o pipefail
+          rustup target add aarch64-apple-ios
+          cd native
+          IPHONEOS_DEPLOYMENT_TARGET=17.0 cargo build --release --lib --target aarch64-apple-ios 2>&1 | tee ../rust-build.log
+          cargo build --release --bin gsv-labels 2>&1 | tee -a ../rust-build.log
+      # 只出报告，不影响编译：先验证 JS 移植，再看 jpreprocess 和电脑上的 OpenJTalk 差多少
+      - name: 文本处理对照测试
+        continue-on-error: true
+        run: |
+          {
+            echo "== JS 移植对照原版（日文）"; node frontend/test/test_ja.js | tail -3
+            if [ -f frontend/test/test_zh.js ]; then echo "== JS 移植对照原版（中文）"; node frontend/test/test_zh.js | tail -3; fi
+            echo "== jpreprocess 对照电脑上的 OpenJTalk"; node frontend/test/test_ja.js native/target/release/gsv-labels
+          } > parity.txt 2>&1 || true
+          tail -5 parity.txt
       - name: 生成 Xcode 工程
         run: |
           brew install xcodegen
@@ -46,19 +71,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          touch build.log
-          grep -nE "error:|warning: unre|BUILD (SUCCEEDED|FAILED)|\*\* " build.log | head -200 > errors.txt || true
+          touch build.log rust-build.log parity.txt
+          {
+            grep -nE -A6 "^error" rust-build.log | head -120
+            grep -nE "error:|BUILD (SUCCEEDED|FAILED)|\*\* " build.log | head -200
+          } > errors.txt || true
           echo "commit=$GITHUB_SHA run=$GITHUB_RUN_ID status=${{ job.status }} time=$(date -u +%FT%TZ)" > build-info.txt
-          files=(build-info.txt errors.txt build.log)
-          if [ -f build/ipa/GSVPad-unsigned.ipa ]; then
-            files+=(build/ipa/GSVPad-unsigned.ipa)
-          fi
+          files=(build-info.txt errors.txt parity.txt rust-build.log build.log)
           gh release view ci >/dev/null 2>&1 || \
             gh release create ci --prerelease --title "自动编译产物" --notes "每次推送后自动更新。build-info.txt 记着对应的提交。"
+          if [ -f build/ipa/GSVPad-unsigned.ipa ]; then
+            files+=(build/ipa/GSVPad-unsigned.ipa)
+          else
+            # 这次没编出来，就把上一次的安装包撤掉，免得装到旧版本
+            gh release delete-asset ci GSVPad-unsigned.ipa --yes || true
+          fi
           gh release upload ci "${files[@]}" --clobber
-      - name: 保留未签名 IPA
-        uses: actions/upload-artifact@v4
-        with:
-          name: GSVPad-unsigned
-          path: build/ipa/GSVPad-unsigned.ipa
-          retention-days: 14

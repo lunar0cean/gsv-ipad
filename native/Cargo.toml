@@ -1,0 +1,18 @@
+[package]
+name = "gsv_native"
+version = "0.1.0"
+edition = "2021"
+description = "Japanese text analysis for the GPT Sovits iPad app (OpenJTalk full-context labels via jpreprocess)"
+license = "BSD-3-Clause"
+publish = false
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[[bin]]
+name = "gsv-labels"
+path = "src/bin/labels.rs"
+
+[dependencies]
+# naist-jdic 特性把 OpenJTalk 的词典直接编进库里，iPad 上不用另外拷词典
+jpreprocess = { version = "=0.15.0", features = ["naist-jdic"] }
