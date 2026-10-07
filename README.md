@@ -21,10 +21,15 @@
 | 内容 | 状态 |
 | --- | --- |
 | 模型转成 ONNX，并对照原版验证声音 | 完成 |
-| 日文文本处理 | 完成。JS 移植与原版逐音素一致（40 句样本）；jpreprocess 与原版 OpenJTalk 的差异由 GitHub 上的对照测试给出 |
+| 日文文本处理 | 完成。JS 移植与原版逐音素一致（40 句样本）；jpreprocess 给出的标签在这些样本上也与电脑上的 OpenJTalk 完全一致 |
 | 中文文本处理 | 完成。JS 移植与原版逐音素一致（121 句样本，另有 2998 句随机生成的压力测试）。英文单词暂时会被跳过 |
-| App：选角色、输入文字、边合成边播放、导出音频 | 已写好，等真机验证 |
+| App：选角色、输入文字、边合成边播放、导出音频 | 在 iPad 模拟器上通过端到端冒烟测试（见下）；真机上还没运行过，速度待测 |
 | 中文语调模型（RoBERTa） | 未接入，目标文本的 BERT 特征暂用全零 |
+
+每次推送后 GitHub 会在 iPad 模拟器上跑 `Tests\SmokeTests.swift`：
+
+- 文本处理：样本里的每段中日文在 JavaScriptCore 里的结果，要与 Node 算出的逐个音素相同。
+- 推理：真模型不在仓库里，所以用随机权重填出结构相同的模型（`tools\ci_fixtures.py`），把「文字 → 音素 → 编码 → 解码循环 → 声码器 → 音频文件」整条流程跑一遍。合成出来的是噪声，验证的是流程，不是音质，也不代表真机速度。
 
 已知情况：
 
@@ -39,6 +44,7 @@
 | `App\Frontend\` | 文本处理脚本和数据，打进 App 当资源 |
 | `native\` | Rust 库：日文文本 → OpenJTalk 全上下文标签 |
 | `frontend\test\` | 文本处理的对照样本和测试 |
+| `Tests\` | 在 iPad 模拟器上跑的冒烟测试 |
 | `tools\` | 电脑端的 Python 脚本 |
 | `project.yml` | XcodeGen 工程描述 |
 | `.github\workflows\build.yml` | 自动编译。产物挂在名为 `ci` 的 Release 上 |
@@ -57,12 +63,16 @@ Python 环境在 `tools\.venv`，由 `D:\k\env` 创建并共用它的包，另�
 | `make_zh_data.py` | 从本机的 jieba_fast、pypinyin 导出中文词典数据到 `App\Frontend\` |
 | `ref_pipeline.py` | 电脑上的参考流程，`OnnxSynth` 与 App 里的 `SynthEngine` 一一对应 |
 | `compare.py`、`probe_first_sentence.py` | 原版与 ONNX 的对比；漏读第一句的检查 |
+| `asr_check.py <文件夹>` | 用本机的语音识别模型转写合成结果，检查内容有没有读对 |
+| `onnx_pack.py`、`gsvpack.py` | 写 ONNX 权重和角色包的公共代码，只依赖 numpy 和 onnx |
+| `ci_fixtures.py` | 生成模拟器测试用的随机权重模型和假角色包 |
 
 文本处理的测试不需要 Python：
 
 ```powershell
 node D:\ios\gsv-ipad\frontend\test\test_ja.js
-```n
+```
+
 ```powershell
 node D:\ios\gsv-ipad\frontend\test\test_zh.js
 ```
@@ -77,7 +87,7 @@ node D:\ios\gsv-ipad\frontend\test\test_zh.js
 
 ## 装到 iPad
 
-1. 每次推送后 GitHub 自动编译。安装包在 [ci Release](https://github.com/lunar0cean/gsv-ipad/releases/tag/ci) 的 `GSVPad-unsigned.ipa`；同一处的 `build-info.txt` 记着对应的提交，`errors.txt` 是报错摘要，`parity.txt` 是文本处理的对照结果。
+1. 每次推送后 GitHub 自动编译。安装包在 [ci Release](https://github.com/lunar0cean/gsv-ipad/releases/tag/ci) 的 `GSVPad-unsigned.ipa`；同一处的 `build-info.txt` 记着对应的提交，`errors.txt` 是报错摘要，`parity.txt` 是文本处理的对照结果，`sim-test.txt` 是模拟器测试的结果。
 2. 用 Sideloadly 和自己的 Apple ID 签名安装。
 3. 用 iTunes 的「文件共享」或 iPad 的「文件」App，把 `work\ipad\` 里的 `models` 和 `voices` 两个文件夹拷进 App 的文件夹。
 4. 打开 App，选角色、输入文字、点「生成」。
