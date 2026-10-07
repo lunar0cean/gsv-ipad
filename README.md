@@ -14,6 +14,7 @@
 | --- | --- | --- |
 | 参考音频 → 角色包 | 电脑 | HuBERT 语义特征、声纹、音色向量、参考文本特征预先算好，存成 `.gsvpack` |
 | 文字 → 音素 | iPad | `App\Frontend\*.js`，由系统自带的 JavaScriptCore 运行。日文的分词、读音、重音来自 `native\` 里的 Rust 库（[jpreprocess](https://github.com/jpreprocess/jpreprocess)，OpenJTalk 的 Rust 重写） |
+| 中文语调特征 | iPad | 可选。`chinese-roberta-wwm-ext-large` 的前 22 层，571MB，只在输入中文时用 |
 | 音素 → 语义 → 波形 | iPad | Swift + ONNX Runtime。计算图用 [Genie-TTS](https://github.com/High-Logic/Genie-TTS) 的模板，权重取自本机底模，共约 570MB |
 
 文本处理用 JavaScript 写，是因为它能在电脑上用 Node 对照原版 Python 逐句验证，iPad 上又不需要额外的运行环境。
@@ -26,7 +27,7 @@
 | 日文文本处理 | 完成。JS 移植与原版逐音素一致（40 句样本）；jpreprocess 给出的标签在这些样本上也与电脑上的 OpenJTalk 完全一致 |
 | 中文文本处理 | 完成。JS 移植与原版逐音素一致（121 句样本，另有 2998 句随机生成的压力测试）。英文单词暂时会被跳过 |
 | App：选角色、输入文字、边合成边播放、导出音频 | 0.1.1 已在 A16 iPad 上跑通，能合成中文和日文；合成速度还没有实测数字。每次推送都在 iPad 模拟器上跑端到端冒烟测试（见下） |
-| 中文语调模型（RoBERTa） | 未接入，目标文本的 BERT 特征暂用全零 |
+| 中文语调模型（RoBERTa） | 0.2.0 接入。ONNX 版与原版 PyTorch 数值一致；模型文件可选，没有时退回全零特征。真机上的内存占用和听感还没有验证 |
 
 每次推送后 GitHub 会在 iPad 模拟器上跑 `Tests\SmokeTests.swift`：
 
@@ -66,6 +67,7 @@ Python 环境在 `tools\.venv`，由 `D:\k\env` 创建并共用它的包，另�
 | `ref_pipeline.py` | 电脑上的参考流程，`OnnxSynth` 与 App 里的 `SynthEngine` 一一对应 |
 | `compare.py`、`probe_first_sentence.py` | 原版与 ONNX 的对比；漏读第一句的检查 |
 | `asr_check.py <文件夹>` | 用本机的语音识别模型转写合成结果，检查内容有没有读对 |
+| `export_bert.py`、`bert_onnx.py` | 生成中文语调模型的 ONNX（直接拼计算图，不用 `torch.onnx.export`）和字表，并与原版对照 |
 | `onnx_pack.py`、`gsvpack.py` | 写 ONNX 权重和角色包的公共代码，只依赖 numpy 和 onnx |
 | `ci_fixtures.py` | 生成模拟器测试用的随机权重模型和假角色包 |
 
@@ -91,5 +93,5 @@ node D:\ios\gsv-ipad\frontend\test\test_zh.js
 
 1. 每次推送后 GitHub 自动编译。安装包在 [ci Release](https://github.com/lunar0cean/gsv-ipad/releases/tag/ci) 的 `GSVPad-unsigned.ipa`；同一处的 `build-info.txt` 记着对应的提交，`errors.txt` 是报错摘要，`parity.txt` 是文本处理的对照结果，`sim-test.txt` 是模拟器测试的结果。
 2. 用 Sideloadly 和自己的 Apple ID 签名安装。
-3. 在电脑的「Apple 设备」里点「文件」，选「GPT Sovits」，把 `work\ipad\` 里 `models` 和 `voices` 两个文件夹中的文件加进去：用「添加文件」按钮，或者拖到 App 的名字上。往文档列表里拖是拖不进去的。
+3. 在电脑的「Apple 设备」里点「文件」，选「GPT Sovits」，把 `work\ipad\` 里 `models` 和 `voices` 两个文件夹中的文件加进去：用「添加文件」按钮，或者拖到 App 的名字上。往文档列表里拖是拖不进去的。中文语调模型 `work\ipad\bert\roberta_fp16.onnx` 也这样加进去，它是可选的。
 4. 打开 App，选角色、输入文字、点「生成」。

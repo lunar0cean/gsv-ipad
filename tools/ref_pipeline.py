@@ -52,11 +52,16 @@ class Frontend:
             self.cfg.cnroberta = CNRoberta(os.path.join(MODELS_DIR, "chinese-roberta-wwm-ext-large"), self.cfg)
 
     def __call__(self, text: str, lang: str = None):
+        seq, _, bert, norm_text = self.detail(text, lang)
+        return seq, bert, norm_text
+
+    def detail(self, text: str, lang: str = None):
+        """另外返回每个字对应的音素数（中文语调模型要用）。"""
         self.cfg.force_lang = lang
         with torch.inference_mode():
-            phones, _, bert, norm_text = self._get(text, self.cfg)
+            phones, word2ph, bert, norm_text = self._get(text, self.cfg)
         seq = np.array([phones], dtype=np.int64)
-        return seq, bert.float().cpu().numpy(), norm_text
+        return seq, word2ph["ph"], bert.float().cpu().numpy(), norm_text
 
 
 def tail_offset(audio: torch.Tensor, threshold=0.01, frame_length=512, hop_length=256, search_len=6400) -> int:
