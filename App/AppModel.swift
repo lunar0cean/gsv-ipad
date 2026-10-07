@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 struct VoicePreset: Identifiable {
     let url: URL
@@ -134,11 +135,18 @@ final class AppModel: ObservableObject {
         setCancelled(false)
         player?.stop()
         status = engine == nil ? "正在载入模型…" : "正在处理文字…"
+        // 长文本要合成几分钟。期间不让屏幕自动锁定：锁屏后系统会把 App 挂起，合成和播放都会停下
+        UIApplication.shared.isIdleTimerDisabled = true
 
         let text = self.text
         let language = self.language
         worker.async { [weak self] in
             guard let self else { return }
+            var all: [Float] = []
+            var seconds = 0.0
+            var cancelled = false
+            var skipped: [Int] = []
+            var failure: String?
             do {
                 let (frontend, engine) = try self.loadIfNeeded(directory: directory)
                 let segments = try frontend.prepare(text, language: language)
@@ -146,27 +154,55 @@ final class AppModel: ObservableObject {
                     throw FrontendError.failed("没有可以合成的文字")
                 }
                 let voice = try TensorPack(url: voiceURL)
+                AppModel.log("开始：\(segments.count) 句，语言 \(language)，角色包 \(voiceURL.lastPathComponent)")
 
-                var all: [Float] = []
-                var seconds = 0.0
-                var cancelled = false
                 for (index, segment) in segments.enumerated() {
                     DispatchQueue.main.async { self.status = "正在合成第 \(index + 1) / \(segments.count) 句" }
-                    guard let result = try engine.synthesize(voice: voice, phonemes: segment.ids,
-                                                             isCancelled: { self.isCancelled }) else {
-                        cancelled = true
+
+                    // 一句出错不拖累后面的句子：重试一次，还不行就跳过这一句
+                    var samples: [Float]?
+                    for attempt in 1...2 {
+                        do {
+                            guard let result = try engine.synthesize(voice: voice, phonemes: segment.ids,
+                                                                     isCancelled: { self.isCancelled }) else {
+                                cancelled = true
+                                break
+                            }
+                            seconds += result.stats.seconds
+                            samples = AudioPost.trimAndFade(result.samples, sampleRate: SynthEngine.sampleRate)
+                            AppModel.log("第 \(index + 1) 句：音素 \(result.stats.phones)，语义 \(result.stats.tokens)，"
+                                + "内部重试 \(result.stats.attempts - 1) 次，"
+                                + String(format: "用时 %.1f 秒，音频 %.1f 秒", result.stats.seconds, result.stats.audioSeconds))
+                            break
+                        } catch {
+                            AppModel.log("第 \(index + 1) 句第 \(attempt) 次失败：\(error.localizedDescription)｜\(segment.text)")
+                        }
+                    }
+                    if cancelled {
                         break
                     }
-                    var samples = AudioPost.trimAndFade(result.samples, sampleRate: SynthEngine.sampleRate)
+                    guard var samples else {
+                        skipped.append(index + 1)
+                        continue
+                    }
                     let pause = Int(segment.pause * Double(SynthEngine.sampleRate))
                     samples.append(contentsOf: [Float](repeating: 0, count: max(0, pause)))
-                    seconds += result.stats.seconds
                     all.append(contentsOf: samples)
-                    try self.player?.enqueue(samples)
+                    do {
+                        try self.player?.enqueue(samples)
+                    } catch {
+                        // 播放不了不影响合成，最后还能「再听一次」或导出
+                        AppModel.log("第 \(index + 1) 句播放失败：\(error.localizedDescription)")
+                    }
                 }
+            } catch {
+                failure = error.localizedDescription
+                AppModel.log("中断：\(error.localizedDescription)")
+            }
 
-                var file: URL?
-                if !all.isEmpty {
+            var file: URL?
+            if !all.isEmpty {
+                do {
                     let folder = AppModel.documents.appendingPathComponent("outputs", isDirectory: true)
                     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
                     let formatter = DateFormatter()
@@ -174,23 +210,57 @@ final class AppModel: ObservableObject {
                     let url = folder.appendingPathComponent("\(formatter.string(from: Date())).wav")
                     try WavWriter.write(samples: all, sampleRate: SynthEngine.sampleRate, to: url)
                     file = url
-                }
-
-                let audioSeconds = Double(all.count) / Double(SynthEngine.sampleRate)
-                DispatchQueue.main.async {
-                    self.lastSamples = all
-                    self.output = file
-                    self.status = cancelled
-                        ? "已停止"
-                        : String(format: "完成　音频 %.1f 秒，合成用时 %.1f 秒", audioSeconds, seconds)
-                    self.busy = false
-                }
-            } catch {
-                DispatchQueue.main.async {
-                    self.status = error.localizedDescription
-                    self.busy = false
+                } catch {
+                    AppModel.log("保存音频失败：\(error.localizedDescription)")
                 }
             }
+
+            let audioSeconds = Double(all.count) / Double(SynthEngine.sampleRate)
+            var message: String
+            if let failure {
+                message = failure
+            } else if cancelled {
+                message = "已停止"
+            } else {
+                message = String(format: "完成　音频 %.1f 秒，合成用时 %.1f 秒", audioSeconds, seconds)
+                if !skipped.isEmpty {
+                    message += "；第 " + skipped.map { String($0) }.joined(separator: "、") + " 句没有合成出来"
+                }
+            }
+            AppModel.log("结束：\(message)")
+
+            let finalAudio = all
+            let finalFile = file
+            let finalMessage = message
+            DispatchQueue.main.async {
+                UIApplication.shared.isIdleTimerDisabled = false
+                self.lastSamples = finalAudio
+                self.output = finalFile
+                self.status = finalMessage
+                self.busy = false
+            }
+        }
+    }
+
+    /// 往 outputs/log.txt 追加一行。排查「中途停下」这类问题时看它，可以用「文件」App 或电脑上的「Apple 设备」取出来。
+    private static func log(_ line: String) {
+        let folder = documents.appendingPathComponent("outputs", isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let url = folder.appendingPathComponent("log.txt")
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        guard let data = "\(formatter.string(from: Date()))  \(line)\n".data(using: .utf8) else { return }
+
+        let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue ?? 0
+        if size > 512 * 1024 {
+            try? FileManager.default.removeItem(at: url)  // 日志只留最近的一段
+        }
+        if let handle = try? FileHandle(forWritingTo: url) {
+            defer { try? handle.close() }
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: data)
+        } else {
+            try? data.write(to: url)
         }
     }
 
@@ -229,10 +299,11 @@ final class AppModel: ObservableObject {
         let guide = docs.appendingPathComponent("使用说明.txt")
         guard !FileManager.default.fileExists(atPath: guide.path) else { return }
         let text = """
-        把电脑上 gsv-ipad\\work\\ipad 里的两个文件夹拷到这里：
-          models  模型（约 570MB）
-          voices  角色包
-        拷完回到 App 点「重新检查」。合成的音频保存在 outputs 文件夹。
+        把电脑上 gsv-ipad\\work\\ipad 里这两个文件夹中的文件拷到这里（放不放在文件夹里都可以）：
+          models  7 个模型文件（约 570MB）
+          voices  角色包（.gsvpack）
+        拷完回到 App 点「重新检查」。
+        合成的音频保存在 outputs 文件夹；outputs\\log.txt 是合成日志，出问题时看它。
         """
         try? text.write(to: guide, atomically: true, encoding: .utf8)
     }
