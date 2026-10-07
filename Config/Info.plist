@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- 让本 App 的文件夹出现在电脑的「Apple 设备」/ iTunes 文件共享和 iPad 的「文件」App 里，用来拷模型和角色包。
+	     这两项必须写在这里：Xcode 自动生成 Info.plist 时不认 INFOPLIST_KEY_UIFileSharingEnabled 这种写法 -->
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
+</dict>
+</plist>

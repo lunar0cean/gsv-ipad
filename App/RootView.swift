@@ -142,7 +142,7 @@ struct RootView: View {
                         .foregroundStyle(Theme.dim)
                 }
             }
-            Text("用 iTunes 的「文件共享」或 iPad 的「文件」App，把电脑上 work\\ipad 里的 models 和 voices 两个文件夹拷进本 App 的文件夹，再点「重新检查」。")
+            Text("用数据线连上电脑，打开「Apple 设备」，在左边点「文件」，在 App 列表里选「GPT Sovits」，把电脑上 work\\ipad 里的 models 和 voices 两个文件夹拖进去，再回到这里点「重新检查」。")
                 .font(Theme.serif(15))
                 .foregroundStyle(Theme.dim)
                 .fixedSize(horizontal: false, vertical: true)
