@@ -51,6 +51,16 @@ def main() -> None:
         "ge_advanced": rng.normal(0, 1, (1, 512, 1)).astype(np.float32),
     }
     write_pack(os.path.join(args.out, "voice.gsvpack"), "voice", {"name": "测试", "lang": "ja"}, voice)
+
+    # 中文语调模型：结构相同，只留 1 层，权重随机
+    from bert_onnx import build_bert_onnx
+
+    def bert_lookup(key: str, shape):
+        if key.endswith("LayerNorm.weight"):
+            return (1 + rng.normal(0, 0.02, shape)).astype(np.float16)
+        return rng.normal(0, 0.05, shape).astype(np.float16)
+
+    build_bert_onnx(os.path.join(args.out, "roberta_fp16.onnx"), bert_lookup, layers=1)
     total = sum(os.path.getsize(os.path.join(dp, f)) for dp, _, fs in os.walk(args.out) for f in fs)
     print(f"测试数据共 {total / 1e6:.0f} MB，在 {args.out}")
 
@@ -80,6 +90,10 @@ def main() -> None:
                                 "ge": voice["ge"], "ge_advanced": voice["ge_advanced"]})[0]
         print(f"随机模型跑通：解码 {steps} 步，语义 {len(tokens)} 个，音频 {len(audio)} 个采样，"
               f"全部是有限数值：{bool(np.isfinite(audio).all())}")
+
+        bert = ort.InferenceSession(os.path.join(args.out, "roberta_fp16.onnx"), providers=["CPUExecutionProvider"])
+        features = bert.run(None, {"input_ids": np.array([[101, 872, 1962, 119, 102]], dtype=np.int64)})[0]
+        print(f"随机语调模型跑通：输出形状 {features.shape}，全部是有限数值：{bool(np.isfinite(features).all())}")
 
 
 if __name__ == "__main__":

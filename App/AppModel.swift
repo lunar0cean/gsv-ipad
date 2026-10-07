@@ -18,9 +18,13 @@ final class AppModel: ObservableObject {
     @Published var status = ""
     @Published var missingFiles: [String] = []
     @Published var output: URL?
+    /// 文档目录里有没有中文语调模型。它是可选的，没有时中文也能读，只是语气偏平
+    @Published var bertInstalled = false
 
     private var modelDirectory: URL?
+    private var bertURL: URL?
     private var engine: SynthEngine?
+    private var bertEngine: BertEngine?
     private var frontend: TextFrontend?
     private var lastSamples: [Float] = []
     private let player = StreamPlayer(sampleRate: SynthEngine.sampleRate)
@@ -48,11 +52,15 @@ final class AppModel: ObservableObject {
         AppModel.writeGuide(in: docs)
 
         var foundDirectory: URL?
+        var foundBert: URL?
         var found: [VoicePreset] = []
         if let walker = fm.enumerator(at: docs, includingPropertiesForKeys: nil) {
             for case let url as URL in walker {
                 if url.lastPathComponent == "vits_fp32.onnx" {
                     foundDirectory = url.deletingLastPathComponent()
+                }
+                if url.lastPathComponent == BertEngine.fileName {
+                    foundBert = url
                 }
                 guard url.pathExtension == "gsvpack", let pack = try? TensorPack(url: url), pack.kind == "voice" else {
                     continue
@@ -74,6 +82,11 @@ final class AppModel: ObservableObject {
             engine = nil
             modelDirectory = newDirectory
         }
+        if bertURL != foundBert {
+            bertEngine = nil
+            bertURL = foundBert
+        }
+        bertInstalled = foundBert != nil
 
         // 文件名前面的序号决定显示顺序
         presets = found.sorted { $0.url.lastPathComponent < $1.url.lastPathComponent }
@@ -128,6 +141,20 @@ final class AppModel: ObservableObject {
         return (frontend, engine)
     }
 
+    /// 只在后台队列上调用。中文语调模型载入后占 1GB 以上内存，所以只在第一次合成中文时才载入。
+    private func loadBertIfNeeded(url: URL) throws -> BertEngine {
+        if let cached = DispatchQueue.main.sync(execute: { self.bertEngine }) {
+            return cached
+        }
+        DispatchQueue.main.async { self.status = "正在载入中文语调模型…" }
+        let start = CFAbsoluteTimeGetCurrent()
+        let loaded = try BertEngine(modelURL: url, threads: AppModel.threads)
+        AppModel.log(String(format: "中文语调模型载入用时 %.1f 秒，内存占用 %.0f MB",
+                            CFAbsoluteTimeGetCurrent() - start, memoryFootprintMB()))
+        DispatchQueue.main.sync { self.bertEngine = loaded }
+        return loaded
+    }
+
     func generate() {
         guard canGenerate, let directory = modelDirectory, let voiceURL = selected else { return }
         busy = true
@@ -140,6 +167,7 @@ final class AppModel: ObservableObject {
 
         let text = self.text
         let language = self.language
+        let bertURL = language == "zh" ? self.bertURL : nil
         worker.async { [weak self] in
             guard let self else { return }
             var all: [Float] = []
@@ -154,16 +182,37 @@ final class AppModel: ObservableObject {
                     throw FrontendError.failed("没有可以合成的文字")
                 }
                 let voice = try TensorPack(url: voiceURL)
-                AppModel.log("开始：\(segments.count) 句，语言 \(language)，角色包 \(voiceURL.lastPathComponent)")
+
+                // 语调模型载入失败不影响合成，退回全零特征
+                var bert: BertEngine?
+                if let bertURL {
+                    do {
+                        bert = try self.loadBertIfNeeded(url: bertURL)
+                    } catch {
+                        AppModel.log("中文语调模型载入失败：\(error.localizedDescription)")
+                    }
+                }
+                AppModel.log("开始：\(segments.count) 句，语言 \(language)，角色包 \(voiceURL.lastPathComponent)，"
+                    + "中文语调模型 \(bert == nil ? "未使用" : "已使用")")
 
                 for (index, segment) in segments.enumerated() {
                     DispatchQueue.main.async { self.status = "正在合成第 \(index + 1) / \(segments.count) 句" }
+
+                    var textBert: NSMutableData?
+                    if let bert, let ids = segment.bertIds, let repeats = segment.bertRepeats {
+                        do {
+                            textBert = try bert.features(ids: ids, repeats: repeats)
+                        } catch {
+                            AppModel.log("第 \(index + 1) 句的语调特征没算出来：\(error.localizedDescription)")
+                        }
+                    }
 
                     // 一句出错不拖累后面的句子：重试一次，还不行就跳过这一句
                     var samples: [Float]?
                     for attempt in 1...2 {
                         do {
                             guard let result = try engine.synthesize(voice: voice, phonemes: segment.ids,
+                                                                     textBert: textBert,
                                                                      isCancelled: { self.isCancelled }) else {
                                 cancelled = true
                                 break
@@ -227,7 +276,7 @@ final class AppModel: ObservableObject {
                     message += "；第 " + skipped.map { String($0) }.joined(separator: "、") + " 句没有合成出来"
                 }
             }
-            AppModel.log("结束：\(message)")
+            AppModel.log("结束：\(message)" + String(format: "　内存占用 %.0f MB", memoryFootprintMB()))
 
             let finalAudio = all
             let finalFile = file

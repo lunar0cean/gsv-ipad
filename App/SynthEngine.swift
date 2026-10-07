@@ -83,8 +83,9 @@ final class SynthEngine {
         self.maxSteps = maxSteps
     }
 
+    /// `textBert` 是目标文本的 BERT 特征（[音素数 × 1024]，来自 BertEngine）；不给或长度不对时用全零。
     /// `isCancelled` 在解码循环的每一步都会被问一次；返回 true 时本次合成返回 nil。
-    func synthesize(voice: TensorPack, phonemes: [Int64],
+    func synthesize(voice: TensorPack, phonemes: [Int64], textBert: NSMutableData? = nil,
                     isCancelled: () -> Bool) throws -> (samples: [Float], stats: SynthStats)? {
         let clock = CFAbsoluteTimeGetCurrent()
         var stats = SynthStats()
@@ -96,7 +97,7 @@ final class SynthEngine {
         for attempt in 1...SynthEngine.maxAttempts {
             stats.attempts = attempt
             guard let generated = try semanticTokens(voice: voice, textSeq: textSeq, phoneCount: phonemes.count,
-                                                     isCancelled: isCancelled) else {
+                                                     textBert: textBert, isCancelled: isCancelled) else {
                 return nil
             }
             tokens = generated
@@ -126,19 +127,24 @@ final class SynthEngine {
         return (samples, stats)
     }
 
-    private func semanticTokens(voice: TensorPack, textSeq: ORTValue, phoneCount: Int,
+    private func semanticTokens(voice: TensorPack, textSeq: ORTValue, phoneCount: Int, textBert: NSMutableData?,
                                 isCancelled: () -> Bool) throws -> [Int64]? {
-        // 目标文本的 BERT 特征先用全零（日文本来就是全零；中文以后可以接上 RoBERTa）
-        guard let zeros = NSMutableData(length: phoneCount * SynthEngine.bertWidth * MemoryLayout<Float>.stride) else {
+        // 目标文本的 BERT 特征：日文本来就是全零；中文装了语调模型时由调用方给，否则也用全零
+        let bertBytes = phoneCount * SynthEngine.bertWidth * MemoryLayout<Float>.stride
+        var features = textBert
+        if features?.length != bertBytes {
+            features = NSMutableData(length: bertBytes)
+        }
+        guard let features else {
             throw SynthError.missingOutput("text_bert")
         }
-        let textBert = try ORTValue(tensorData: zeros, elementType: .float,
-                                    shape: [NSNumber(value: phoneCount), NSNumber(value: SynthEngine.bertWidth)])
+        let textBertValue = try ORTValue(tensorData: features, elementType: .float,
+                                         shape: [NSNumber(value: phoneCount), NSNumber(value: SynthEngine.bertWidth)])
         let encoderInputs: [String: ORTValue] = [
             "ref_seq": try voice.value("ref_seq"),
             "text_seq": textSeq,
             "ref_bert": try voice.value("ref_bert"),
-            "text_bert": textBert,
+            "text_bert": textBertValue,
             "ssl_content": try voice.value("ssl_content"),
         ]
         let encoded = try encoder.run(withInputs: encoderInputs, outputNames: ["x", "prompts"], runOptions: nil)

@@ -10,7 +10,11 @@ function loadFrontend(jaLabels) {
   const context = {
     console,
     __jaLabels: jaLabels || (() => ""),
-    __loadText: (name) => fs.readFileSync(path.join(FRONTEND_DIR, name), "utf8"),
+    // 与 iPad 上的行为一致：文件不存在时返回空字符串
+    __loadText: (name) => {
+      const file = path.join(FRONTEND_DIR, name);
+      return fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+    },
   };
   vm.createContext(context);
   for (const name of SCRIPT_ORDER) {

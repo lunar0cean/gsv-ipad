@@ -107,6 +107,7 @@ var GSV = (function () {
   function g2p(text, lang) {
     text = text.replace(/ {2,}/g, " ");
     var norm, phones;
+    var word2ph = null;
     if (lang === "ja") {
       norm = jaNormalize(text);
       phones = jaG2P(norm);
@@ -115,7 +116,9 @@ var GSV = (function () {
         throw new Error("这个版本还不支持中文输入");
       }
       norm = GSV_ZH.normalize(text);
-      phones = GSV_ZH.g2p(norm);
+      var detail = GSV_ZH.g2pDetail(norm);
+      phones = detail.phones;
+      word2ph = detail.word2ph;
     } else {
       throw new Error("不支持的语种：" + lang);
     }
@@ -125,7 +128,8 @@ var GSV = (function () {
     return {
       norm: norm,
       phones: phones,
-      ids: phones.map(function (ph) { return SYMBOL_ID[ph]; })
+      ids: phones.map(function (ph) { return SYMBOL_ID[ph]; }),
+      word2ph: word2ph  // 只有中文有：规范化文本里每个字对应几个音素
     };
   }
 
@@ -199,7 +203,14 @@ var GSV = (function () {
         }
         var last = cut.charAt(cut.length - 1);
         var scale = Object.prototype.hasOwnProperty.call(CUT_MUTE_SCALE, last) ? CUT_MUTE_SCALE[last] : 1.0;
-        segments.push({ text: cut, ids: result.ids, pause: CUT_MUTE_SECONDS * scale });
+        var segment = { text: cut, ids: result.ids, pause: CUT_MUTE_SECONDS * scale };
+        // 中文语调模型的输入。重复次数加起来必须正好等于音素数，否则不给，合成时退回全零特征
+        var bert = result.word2ph ? GSV_ZH.bertInput(result.norm, result.word2ph) : null;
+        if (bert && bert.repeats.reduce(function (sum, n) { return sum + n; }, 0) === result.ids.length) {
+          segment.bertIds = bert.ids;
+          segment.bertRepeats = bert.repeats;
+        }
+        segments.push(segment);
       });
     });
     return segments;

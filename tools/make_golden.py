@@ -73,14 +73,19 @@ def japanese() -> None:
 def chinese(extra: str = None) -> None:
     import jieba_fast.posseg as psg
     from gsv_tts.GPT_SoVITS.G2P import text_to_phonemes
+    from tokenizers import Tokenizer
+
+    # 中文语调模型（BERT）的分词器。只读分词器文件，不载入模型
+    tokenizer = Tokenizer.from_file(os.path.join(MODELS_DIR, "chinese-roberta-wwm-ext-large", "tokenizer.json"))
 
     def case(text: str) -> dict:
         try:
-            phones, _, norm_text = text_to_phonemes(text, "zh")
+            phones, word2ph, norm_text = text_to_phonemes(text, "zh")
         except Exception as error:  # 原版遇到读不出来的字会直接报错，这类句子不进样本
             return {"text": text, "error": repr(error)}
         return {"text": text, "norm": norm_text, "phones": phones,
-                "words": [[word, flag] for word, flag in psg.lcut(norm_text)]}
+                "words": [[word, flag] for word, flag in psg.lcut(norm_text)],
+                "word2ph": word2ph["ph"], "bert_ids": tokenizer.encode(norm_text).ids}
 
     if extra:
         with open(extra, "r", encoding="utf-8") as f:

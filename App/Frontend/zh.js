@@ -1220,8 +1220,11 @@ var GSV_ZH = (function () {
     return [pair[0], pair[1] + tone];
   }
 
-  function g2p(text) {
+  // 返回音素，以及规范化文本里每个字对应几个音素（汉字 2 个，标点 1 个）。后者是中文语调模型（BERT）要用的：
+  // 它按字给出特征，要按这个数重复成按音素的特征
+  function g2pDetail(text) {
     var phones = [];
+    var word2ph = [];
     text.split(/(?<=[!?…,.\-])\s*/).forEach(function (segment) {
       if (segment.trim() === "") {
         return;
@@ -1252,6 +1255,9 @@ var GSV_ZH = (function () {
           Array.from(initials[i]).forEach(function (ch) {
             if (PUNCTUATION.indexOf(ch) >= 0) {
               phones.push(ch);
+              word2ph.push(1);
+            } else {
+              word2ph.push(0);
             }
           });
           continue;
@@ -1259,15 +1265,47 @@ var GSV_ZH = (function () {
         var pair = syllablePhones(initials[i], finals[i]);
         if (pair) {
           phones.push(pair[0], pair[1]);
+          word2ph.push(2);
+        } else {
+          word2ph.push(0);
         }
       }
     });
-    return phones;
+    return { phones: phones, word2ph: word2ph };
+  }
+
+  function g2p(text) {
+    return g2pDetail(text).phones;
+  }
+
+  // ---------- 中文语调模型（BERT）的输入 ----------
+
+  var bertVocabulary;
+
+  // 规范化后的中文只有汉字和几种标点，BERT 分词的结果就是一字一个编号，查不到的记作 [UNK]。
+  // 返回 {ids: 含首尾 [CLS]、[SEP] 的编号, repeats: 每个字重复几次}；对不上或没有字表时返回 null
+  function bertInput(norm, word2ph) {
+    if (bertVocabulary === undefined) {
+      var text = __loadText("zh_bert_vocab.json");
+      bertVocabulary = text ? JSON.parse(text) : null;
+    }
+    if (!bertVocabulary || norm.length === 0 || norm.length !== word2ph.length) {
+      return null;
+    }
+    var ids = [bertVocabulary.cls];
+    for (var i = 0; i < norm.length; i++) {
+      var ch = norm.charAt(i);
+      ids.push(has(bertVocabulary.chars, ch) ? bertVocabulary.chars[ch] : bertVocabulary.unk);
+    }
+    ids.push(bertVocabulary.sep);
+    return { ids: ids, repeats: word2ph.slice() };
   }
 
   return {
     normalize: normalize,
     g2p: g2p,
+    g2pDetail: g2pDetail,
+    bertInput: bertInput,
     // 以下只给对照测试用
     posCut: posCut,
     cut: cut,

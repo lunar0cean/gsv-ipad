@@ -14,7 +14,7 @@ const loadMs = Date.now() - started;
 let same = 0;
 let skipped = 0;
 let shown = 0;
-const failures = { norm: 0, words: 0, phones: 0 };
+const failures = { norm: 0, words: 0, phones: 0, bert: 0 };
 const begin = Date.now();
 for (const item of golden) {
   if (item.error) {
@@ -28,6 +28,20 @@ for (const item of golden) {
     got = { norm: "", phones: [], error: String(error && error.stack ? error.stack : error) };
   }
   if (got.norm === item.norm && got.phones.join(" ") === item.phones.join(" ")) {
+    // 中文语调模型的输入：每个字对应的音素数、BERT 的字符编号，也要和原版一致
+    if (item.word2ph) {
+      const bert = GSV_ZH.bertInput(got.norm, got.word2ph);
+      const ok = got.word2ph.join(",") === item.word2ph.join(",") && bert && bert.ids.join(",") === item.bert_ids.join(",");
+      if (!ok) {
+        failures.bert += 1;
+        if (shown < 25) {
+          shown += 1;
+          console.log(`不一致（语调模型的输入）：${item.text}\n  原版 ${item.word2ph.join(",")} | ${item.bert_ids.join(",")}` +
+            `\n  本次 ${got.word2ph.join(",")} | ${bert ? bert.ids.join(",") : "无"}`);
+        }
+        continue;
+      }
+    }
     same += 1;
     continue;
   }
@@ -51,6 +65,7 @@ for (const item of golden) {
 }
 const total = golden.length - skipped;
 console.log(`\n中文 JS 移植对照原版：${same}/${total} 句完全一致` +
-  `（规范化不同 ${failures.norm}，分词不同 ${failures.words}，读音不同 ${failures.phones}；原版自己报错而跳过 ${skipped}）`);
+  `（规范化不同 ${failures.norm}，分词不同 ${failures.words}，读音不同 ${failures.phones}，` +
+  `语调模型输入不同 ${failures.bert}；原版自己报错而跳过 ${skipped}）`);
 console.log(`载入词典 ${loadMs} 毫秒，处理 ${total} 句 ${Date.now() - begin} 毫秒`);
 process.exit(same === total ? 0 : 1);

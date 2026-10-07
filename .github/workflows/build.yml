@@ -11,6 +11,7 @@ on:
       - "native/**"
       - "frontend/**"
       - "tools/ci_fixtures.py"
+      - "tools/bert_onnx.py"
       - "tools/onnx_pack.py"
       - "tools/gsvpack.py"
       - "project.yml"

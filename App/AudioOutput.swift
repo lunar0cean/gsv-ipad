@@ -107,6 +107,18 @@ final class StreamPlayer {
     }
 }
 
+/// 系统记在本 App 名下的内存，和 iPadOS 判断是否超限用的是同一个数。写进日志，方便判断模型装不装得下。
+func memoryFootprintMB() -> Double {
+    var info = task_vm_info_data_t()
+    var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+    let result = withUnsafeMutablePointer(to: &info) { pointer in
+        pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+            task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+        }
+    }
+    return result == KERN_SUCCESS ? Double(info.phys_footprint) / 1_048_576 : 0
+}
+
 enum WavWriter {
     /// 单声道 16 位 PCM。
     static func write(samples: [Float], sampleRate: Int, to url: URL) throws {

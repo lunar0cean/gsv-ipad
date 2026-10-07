@@ -14,6 +14,8 @@ final class SmokeTests: XCTestCase {
         let text: String
         let ids: [Int64]
         let pause: Double
+        let bertIds: [Int64]?
+        let bertRepeats: [Int]?
     }
 
     private func fixtures() throws -> URL {
@@ -48,6 +50,7 @@ final class SmokeTests: XCTestCase {
                 let got = try frontend.prepare(item.text, language: language)
                 let same = got.count == item.segments.count && zip(got, item.segments).allSatisfy { pair in
                     pair.0.ids == pair.1.ids && pair.0.text == pair.1.text && abs(pair.0.pause - pair.1.pause) < 1e-9
+                        && pair.0.bertIds == pair.1.bertIds && pair.0.bertRepeats == pair.1.bertRepeats
                 }
                 if !same {
                     mismatches += 1
@@ -94,6 +97,30 @@ final class SmokeTests: XCTestCase {
         // 取消：第一步之前就要求停止，应当返回 nil 而不是报错
         let cancelled = try engine.synthesize(voice: voice, phonemes: segments[0].ids, isCancelled: { true })
         XCTAssertNil(cancelled)
+
+        // 中文语调模型：按字的特征要展开成按音素的特征，长度必须正好对上，再带着它合成一句
+        clock = CFAbsoluteTimeGetCurrent()
+        let bert = try BertEngine(modelURL: directory.appendingPathComponent(BertEngine.fileName), threads: 2)
+        print("GSVTEST 载入语调模型 \(elapsed(since: clock))")
+        let chinese = try XCTUnwrap(try frontend.prepare("今天的天气真不错，我们一起去海边走走吧。", language: "zh").first)
+        let bertIds = try XCTUnwrap(chinese.bertIds, "中文片段应当带语调模型的输入")
+        let bertRepeats = try XCTUnwrap(chinese.bertRepeats)
+        XCTAssertEqual(bertIds.count, bertRepeats.count + 2)
+        XCTAssertEqual(bertRepeats.reduce(0, +), chinese.ids.count)
+
+        clock = CFAbsoluteTimeGetCurrent()
+        let features = try bert.features(ids: bertIds, repeats: bertRepeats)
+        print("GSVTEST 语调特征：\(bertIds.count - 2) 个字 -> \(chinese.ids.count) 个音素，\(elapsed(since: clock))")
+        XCTAssertEqual(features.length, chinese.ids.count * BertEngine.width * MemoryLayout<Float>.stride)
+        let values = UnsafeBufferPointer(start: features.bytes.assumingMemoryBound(to: Float.self),
+                                         count: features.length / MemoryLayout<Float>.stride)
+        XCTAssertTrue(values.allSatisfy { $0.isFinite }, "语调特征里有非有限数值")
+        XCTAssertTrue(values.contains { $0 != 0 }, "语调特征不应当全是零")
+
+        let withBert = try XCTUnwrap(try engine.synthesize(voice: voice, phonemes: chinese.ids, textBert: features,
+                                                           isCancelled: { false }))
+        XCTAssertGreaterThan(withBert.samples.count, 0)
+        XCTAssertThrowsError(try bert.features(ids: bertIds, repeats: Array(bertRepeats.dropLast())), "长度对不上应当报错")
     }
 
     /// 音频收尾处理的边界情况：空输入、很短的输入、含非有限数值的输入都不能崩溃。

@@ -64,9 +64,17 @@ struct RootView: View {
 
     private var languageRow: some View {
         labeled("输入的文字是") {
-            HStack(spacing: 28) {
-                choice("日文", selected: model.language == "ja") { model.language = "ja" }
-                choice("中文", selected: model.language == "zh") { model.language = "zh" }
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 28) {
+                    choice("日文", selected: model.language == "ja") { model.language = "ja" }
+                    choice("中文", selected: model.language == "zh") { model.language = "zh" }
+                }
+                if model.language == "zh" && !model.bertInstalled {
+                    Text("没有找到中文语调模型（roberta_fp16.onnx）。中文可以照常合成，但停顿和语气会偏平。")
+                        .font(Theme.serif(13))
+                        .foregroundStyle(Theme.dim)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
     }

@@ -5,6 +5,9 @@ struct TextSegment: Decodable {
     let text: String
     let ids: [Int64]
     let pause: Double
+    // 只有中文有：中文语调模型的输入（每个字的编号、每个字对应的音素数）
+    let bertIds: [Int64]?
+    let bertRepeats: [Int]?
 }
 
 enum FrontendError: LocalizedError {
