@@ -12,6 +12,7 @@ on:
       - "frontend/**"
       - "tools/ci_fixtures.py"
       - "tools/bert_onnx.py"
+      - "tools/enhance_ref.py"
       - "tools/onnx_pack.py"
       - "tools/gsvpack.py"
       - "project.yml"

@@ -13,6 +13,7 @@ struct RootView: View {
                     if model.ready {
                         presetRow
                         languageRow
+                        enhanceRow
                         editor
                         actions
                     } else {
@@ -75,6 +76,15 @@ struct RootView: View {
                         .foregroundStyle(Theme.dim)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+            }
+        }
+    }
+
+    private var enhanceRow: some View {
+        labeled("音频增强（均衡、压缩、统一响度）") {
+            HStack(spacing: 28) {
+                choice("开", selected: model.enhance) { model.enhance = true }
+                choice("关", selected: !model.enhance) { model.enhance = false }
             }
         }
     }

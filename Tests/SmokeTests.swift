@@ -123,6 +123,38 @@ final class SmokeTests: XCTestCase {
         XCTAssertThrowsError(try bert.features(ids: bertIds, repeats: Array(bertRepeats.dropLast())), "长度对不上应当报错")
     }
 
+    private func readFloats(_ url: URL) throws -> [Float] {
+        let data = try Data(contentsOf: url)
+        return data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+    }
+
+    /// 音频增强：连续处理三个片段，结果要与参考实现（tools/enhance_ref.py）一致。
+    /// 参考实现在电脑上和网页界面用的 pedalboard + pyloudnorm 对照过。
+    func testEnhancerMatchesReference() throws {
+        let directory = try fixtures()
+        let enhancer = Enhancer(sampleRate: 32_000)
+        for index in 1...3 {
+            let input = try readFloats(directory.appendingPathComponent("enhance_in_\(index).f32"))
+            let expected = try readFloats(directory.appendingPathComponent("enhance_out_\(index).f32"))
+            let clock = CFAbsoluteTimeGetCurrent()
+            let output = enhancer.process(input)
+            XCTAssertEqual(output.count, expected.count)
+
+            var errorPower = 0.0
+            var signalPower = 0.0
+            for (got, want) in zip(output, expected) {
+                errorPower += Double(got - want) * Double(got - want)
+                signalPower += Double(want) * Double(want)
+            }
+            let relative = (errorPower / max(signalPower, 1e-12)).squareRoot()
+            print("GSVTEST 音频增强片段 \(index)：\(input.count) 个采样，相对误差 "
+                  + String(format: "%.2e", relative) + "，\(elapsed(since: clock))")
+            XCTAssertLessThan(relative, 1e-3, "第 \(index) 个片段与参考实现不一致")
+        }
+        let loudness = try XCTUnwrap(enhancer.integratedLoudness)
+        print("GSVTEST 音频增强前的累计响度 " + String(format: "%.2f LUFS", loudness))
+    }
+
     /// 音频收尾处理的边界情况：空输入、很短的输入、含非有限数值的输入都不能崩溃。
     func testAudioPostHandlesEdgeCases() {
         XCTAssertEqual(AudioPost.trimAndFade([], sampleRate: 32_000).count, 0)

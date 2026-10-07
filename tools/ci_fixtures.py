@@ -61,6 +61,24 @@ def main() -> None:
         return rng.normal(0, 0.05, shape).astype(np.float16)
 
     build_bert_onnx(os.path.join(args.out, "roberta_fp16.onnx"), bert_lookup, layers=1)
+
+    # 音频增强：造一段像说话的信号（带谐波的元音加上高频的擦音），连续三个片段，
+    # 用参考实现算出标准答案。中间那个片段不足 0.4 秒，走「量不出响度就沿用上一次增益」的分支
+    from enhance_ref import Enhancer
+
+    def speech_like(seconds: float) -> np.ndarray:
+        t = np.arange(int(seconds * 32000)) / 32000
+        envelope = np.clip(np.sin(2 * np.pi * 3.1 * t), 0, None) ** 0.7
+        voiced = sum(np.sin(2 * np.pi * 180 * h * t + h) / h for h in range(1, 12))
+        hiss = rng.normal(0, 1, len(t)) * np.clip(np.sin(2 * np.pi * 1.7 * t + 1), 0, None) ** 4
+        return ((0.25 * voiced * envelope + 0.05 * hiss) * 0.6).astype(np.float32)
+
+    enhancer = Enhancer(32000)
+    for index, seconds in enumerate([1.2, 0.2, 0.9], 1):
+        segment = speech_like(seconds)
+        segment.tofile(os.path.join(args.out, f"enhance_in_{index}.f32"))
+        enhancer.process(segment).astype(np.float32).tofile(os.path.join(args.out, f"enhance_out_{index}.f32"))
+    print(f"音频增强的标准答案：3 个片段，累计响度 {enhancer.integrated_loudness():.2f} LUFS")
     total = sum(os.path.getsize(os.path.join(dp, f)) for dp, _, fs in os.walk(args.out) for f in fs)
     print(f"测试数据共 {total / 1e6:.0f} MB，在 {args.out}")
 

@@ -20,6 +20,10 @@ final class AppModel: ObservableObject {
     @Published var output: URL?
     /// 文档目录里有没有中文语调模型。它是可选的，没有时中文也能读，只是语气偏平
     @Published var bertInstalled = false
+    /// 音频增强（均衡、压缩、统一响度），与电脑上网页界面的同名选项相同。默认打开，选择会记住
+    @Published var enhance: Bool = UserDefaults.standard.object(forKey: "enhance") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(enhance, forKey: "enhance") }
+    }
 
     private var modelDirectory: URL?
     private var bertURL: URL?
@@ -168,6 +172,7 @@ final class AppModel: ObservableObject {
         let text = self.text
         let language = self.language
         let bertURL = language == "zh" ? self.bertURL : nil
+        let enhancer = enhance ? Enhancer(sampleRate: SynthEngine.sampleRate) : nil
         worker.async { [weak self] in
             guard let self else { return }
             var all: [Float] = []
@@ -193,7 +198,7 @@ final class AppModel: ObservableObject {
                     }
                 }
                 AppModel.log("开始：\(segments.count) 句，语言 \(language)，角色包 \(voiceURL.lastPathComponent)，"
-                    + "中文语调模型 \(bert == nil ? "未使用" : "已使用")")
+                    + "中文语调模型 \(bert == nil ? "未使用" : "已使用")，音频增强 \(enhancer == nil ? "关" : "开")")
 
                 for (index, segment) in segments.enumerated() {
                     DispatchQueue.main.async { self.status = "正在合成第 \(index + 1) / \(segments.count) 句" }
@@ -236,6 +241,10 @@ final class AppModel: ObservableObject {
                     }
                     let pause = Int(segment.pause * Double(SynthEngine.sampleRate))
                     samples.append(contentsOf: [Float](repeating: 0, count: max(0, pause)))
+                    // 连同后面的停顿一起处理，混响的尾音才有地方落
+                    if let enhancer {
+                        samples = enhancer.process(samples)
+                    }
                     all.append(contentsOf: samples)
                     do {
                         try self.player?.enqueue(samples)
