@@ -40,12 +40,27 @@ targets:
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
         SUPPORTS_MACCATALYST: "NO"
-        # native/ 里的 Rust 库：先由 cargo 编译成静态库，再在这里链接
+        # native/ 里的 Rust 库：先由 cargo 编译成静态库，再在这里链接。真机和模拟器各一份
         SWIFT_OBJC_BRIDGING_HEADER: App/Native/gsv_native.h
-        LIBRARY_SEARCH_PATHS: "$(inherited) $(PROJECT_DIR)/native/target/aarch64-apple-ios/release"
+        "LIBRARY_SEARCH_PATHS[sdk=iphoneos*]": "$(inherited) $(PROJECT_DIR)/native/target/aarch64-apple-ios/release"
+        "LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]": "$(inherited) $(PROJECT_DIR)/native/target/aarch64-apple-ios-sim/release"
         OTHER_LDFLAGS: "$(inherited) -lgsv_native -liconv -lresolv"
+  GSVPadTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests
+    dependencies:
+      - target: GSVPad
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.lunar0cean.gsvpad.tests
+        GENERATE_INFOPLIST_FILE: "YES"
 schemes:
   GSVPad:
     build:
       targets:
         GSVPad: all
+    test:
+      targets: [GSVPadTests]
+      gatherCoverageData: false

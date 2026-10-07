@@ -6,8 +6,12 @@ on:
     branches: [main]
     paths:
       - "App/**"
+      - "Tests/**"
       - "native/**"
       - "frontend/**"
+      - "tools/ci_fixtures.py"
+      - "tools/onnx_pack.py"
+      - "tools/gsvpack.py"
       - "project.yml"
       - ".github/workflows/build.yml"
 
@@ -36,9 +40,10 @@ jobs:
       - name: 编译 Rust 库（日文分词与重音）
         run: |
           set -o pipefail
-          rustup target add aarch64-apple-ios
+          rustup target add aarch64-apple-ios aarch64-apple-ios-sim
           cd native
           IPHONEOS_DEPLOYMENT_TARGET=17.0 cargo build --release --lib --target aarch64-apple-ios 2>&1 | tee ../rust-build.log
+          IPHONEOS_DEPLOYMENT_TARGET=17.0 cargo build --release --lib --target aarch64-apple-ios-sim 2>&1 | tee -a ../rust-build.log
           cargo build --release --bin gsv-labels 2>&1 | tee -a ../rust-build.log
       # 只出报告，不影响编译：先验证 JS 移植，再看 jpreprocess 和电脑上的 OpenJTalk 差多少
       - name: 文本处理对照测试
@@ -46,7 +51,7 @@ jobs:
         run: |
           {
             echo "== JS 移植对照原版（日文）"; node frontend/test/test_ja.js | tail -3
-            if [ -f frontend/test/test_zh.js ]; then echo "== JS 移植对照原版（中文）"; node frontend/test/test_zh.js | tail -3; fi
+            echo "== JS 移植对照原版（中文）"; node frontend/test/test_zh.js | tail -3
             echo "== jpreprocess 对照电脑上的 OpenJTalk"; node frontend/test/test_ja.js native/target/release/gsv-labels
           } > parity.txt 2>&1 || true
           tail -5 parity.txt
@@ -65,19 +70,38 @@ jobs:
           cp -R build/Build/Products/Release-iphoneos/GSVPad.app build/ipa/Payload/
           cd build/ipa
           zip -qr GSVPad-unsigned.ipa Payload
+      # 真模型不在仓库里，这里用随机权重的同结构模型，在 iPad 模拟器上把
+      # 「文字 -> 音素 -> 推理 -> 音频文件」整条流程跑一遍。只出报告，不影响安装包
+      - name: 准备模拟器测试数据
+        continue-on-error: true
+        run: |
+          python3 -m venv .ci-venv
+          .ci-venv/bin/pip install --quiet numpy onnx
+          .ci-venv/bin/pip install --quiet --no-deps genie-tts==2.0.2
+          .ci-venv/bin/python tools/ci_fixtures.py ci-fixtures
+          node frontend/test/make_expected.js native/target/release/gsv-labels ci-fixtures/expected.json
+      - name: 模拟器冒烟测试
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          simulator=$(xcrun simctl list devices available --json | python3 -c 'import json,sys; devices=[d for group in json.load(sys.stdin)["devices"].values() for d in group if "iPad" in d["name"]]; print(next((d["udid"] for d in devices if "A16" in d["name"]), devices[0]["udid"]))')
+          TEST_RUNNER_GSV_FIXTURES="$PWD/ci-fixtures" xcodebuild test -project GSVPad.xcodeproj -scheme GSVPad \
+            -destination "platform=iOS Simulator,id=$simulator" -derivedDataPath build-sim \
+            -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO 2>&1 | tee sim-test.log
       # 仓库是公开的，Release 里的文件不登录也能下载，电脑上不用装 GitHub 工具就能取到安装包和报错
       - name: 发布安装包和日志
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          touch build.log rust-build.log parity.txt
+          touch build.log rust-build.log parity.txt sim-test.log
           {
             grep -nE -A6 "^error" rust-build.log | head -120
             grep -nE "error:|BUILD (SUCCEEDED|FAILED)|\*\* " build.log | head -200
           } > errors.txt || true
+          grep -E "GSVTEST|Test Case|Test Suite .* (passed|failed)|error:|Executed|\*\* TEST|skipped" sim-test.log | head -200 > sim-test.txt || true
           echo "commit=$GITHUB_SHA run=$GITHUB_RUN_ID status=${{ job.status }} time=$(date -u +%FT%TZ)" > build-info.txt
-          files=(build-info.txt errors.txt parity.txt rust-build.log build.log)
+          files=(build-info.txt errors.txt parity.txt sim-test.txt rust-build.log build.log sim-test.log)
           gh release view ci >/dev/null 2>&1 || \
             gh release create ci --prerelease --title "自动编译产物" --notes "每次推送后自动更新。build-info.txt 记着对应的提交。"
           if [ -f build/ipa/GSVPad-unsigned.ipa ]; then

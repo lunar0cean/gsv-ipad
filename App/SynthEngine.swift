@@ -34,7 +34,6 @@ final class SynthEngine {
 
     private static let bertWidth = 1024
     private static let eos: Int64 = 1024
-    private static let maxSteps = 1000
     private static let maxAttempts = 3
     private static let stopName = "stop_flag"
 
@@ -49,8 +48,10 @@ final class SynthEngine {
     private let stageInputs: [String]
     private let stageStateOutputs: [String]
     private let stageOutputSet: Set<String>
+    private let maxSteps: Int
 
-    init(modelDirectory: URL, threads: Int) throws {
+    /// `maxSteps` 是解码循环的上限，一步对应 0.04 秒语音；测试时会调小。
+    init(modelDirectory: URL, threads: Int, maxSteps: Int = 1000) throws {
         let env = try ORTEnv(loggingLevel: .warning)
         let options = try ORTSessionOptions()
         try options.setIntraOpNumThreads(Int32(threads))
@@ -79,6 +80,7 @@ final class SynthEngine {
         self.stageInputs = try stage.inputNames()
         self.stageStateOutputs = stageOutputs.filter { $0 != SynthEngine.stopName }
         self.stageOutputSet = Set(stageOutputs)
+        self.maxSteps = maxSteps
     }
 
     /// `isCancelled` 在解码循环的每一步都会被问一次；返回 true 时本次合成返回 nil。
@@ -154,7 +156,7 @@ final class SynthEngine {
 
         // 每一步的输出里有 48 个随长度增长的缓存张量，必须每步清一次自动释放池，否则内存会一路涨上去
         var stopped = false
-        for _ in 0..<SynthEngine.maxSteps {
+        for _ in 0..<maxSteps {
             if isCancelled() {
                 return nil
             }
