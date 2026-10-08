@@ -1,8 +1,15 @@
 # GPT Sovits（iPad 离线语音合成）：交接说明
 
-写于 2026-10-07，给接手的 AI 或开发者用。这份说明自成一体，不依赖上一位 AI 的会话记忆。
+写于 2026-10-07，2026-10-08 更新到 0.3.0。给接手的 AI 或开发者用。这份说明自成一体，不依赖上一位 AI 的会话记忆。
 
-一句话现状：**试验成功**。App 已经装在用户的 A16 iPad 上，能离线把中文和日文合成语音。用户下一步打算把这套能力并入另一个 iOS 程序。最新版本是 0.2.0（加上了中文语调模型）。真机上已确认的：日文和中文能合成；带引号的长对话不再中途停下；合成速度约为实时的 1.1–1.2 倍。中文语调模型在真机上的内存占用和效果还没有确认。
+一句话现状：**试验成功**。App 已经装在用户的 A16 iPad 上，能离线把中文和日文合成语音。用户下一步打算把这套能力并入另一个 iOS 程序。
+
+| 版本 | 内容 | 真机上确认过没有 |
+| --- | --- | --- |
+| 0.1.x | 日文、中文合成；带引号的长对话不再中途停下 | 确认过。速度约为实时的 1.1–1.2 倍 |
+| 0.2.0 | 中文语调模型（第 4.4 节） | 用户说「中文模型换了还可以」。内存占用没有量过 |
+| 0.2.1 | 音频增强开关，与电脑网页界面的同名选项相同（第 7.1 节） | 没有 |
+| 0.3.0 | **在 iPad 上直接加角色**：选一段录音、填上录音里说的话，就生成角色包，不用电脑（第 4.6、7.2 节）；可以删除角色 | 没有 |
 
 ## 0. 动手之前必须知道的
 
@@ -14,6 +21,7 @@
 | 仓库公开，只放代码 | 模型权重、角色音频、参考文本、合成结果一律不进仓库，都在本机的 `work\`（已被 `.gitignore` 排除）。提交前检查一遍 |
 | 不改动 `D:\k` | 那是用户正在用的 GSV-TTS-Lite。只读、只调用 |
 | 不要做测试界面 | 用户要的是「输入文字 → 出声音」，基准测试、调试面板之类不要放进界面 |
+| 加角色在 iPad 上做，传文件用数据线 | 2026-10-07 用户选的：「在 iPad 上直接加」「继续用数据线」（不做 Wi-Fi 同步）、音频增强「做成开关」 |
 | 下载的东西放 D 盘 | C 盘空间紧。pip 缓存、临时文件也指到 D 盘 |
 | 界面风格 | 冷色（夜蓝底、冷白字、一个淡蓝强调色），宋体，没有底板和卡片，细线加小菱形。暖黄和褐色被否决过。详见 `D:\ios\AI_HANDOFF.md` 第 0 节 |
 | 沟通 | 用户说中文，不是程序员。回复用简体中文、少用术语。给命令时一条一个代码块 |
@@ -41,8 +49,8 @@
 | 目标 | A16 芯片的 iPad，iPadOS 26.7。离线、不依赖电脑 |
 | 仓库 | https://github.com/lunar0cean/gsv-ipad （公开，`main` 分支），本机在 `D:\ios\gsv-ipad` |
 | App | 显示名「GPT Sovits」，包名 `com.lunar0cean.gsvpad`，最低 iOS 17，只支持 iPad |
-| 功能 | 选角色 → 选输入语言（日文或中文）→ 输入文字 → 生成。按标点切句，合成一句播一句，结束后可重听、导出 |
-| 角色 | 4 个：黎瑟、森の神、小町鸫·傲慢（日文），示例·认真（中文）。音色和语气用同一条参考音频。来源写在本机的 `work\presets.json` |
+| 功能 | 选角色 → 选输入语言（日文或中文）→ 输入文字 → 生成。按标点切句，合成一句播一句，结束后可重听、导出。音频增强可开关。可以在 iPad 上用一段录音加角色，也可以删除角色 |
+| 角色 | 电脑上做好的 4 个：黎瑟、森の神、小町鸫·傲慢（日文），示例·认真（中文）。音色和语气用同一条参考音频。来源写在本机的 `work\presets.json`。用户在 iPad 上加的角色存在 App 文档目录的 `voices\u时间_名字.gsvpack` |
 
 ## 2. 整体流程
 
@@ -63,7 +71,9 @@ ONNX 模型 ──────── 拷进 App ────────┘     
 
 中文还多一步：目标文本经过中文语调模型（RoBERTa，可选）得到 BERT 特征，和音素一起送进 T2S 编码器。日文没有这一步，特征是全零。
 
-为什么这样分工：HuBERT（189MB）和声纹模型（185MB）只在处理参考音频时用，预先算好就不用装进 iPad。文本处理用 JavaScript 写，是因为它能在电脑上用 Node 对照原版 Python 逐句验证，iPad 上又不需要额外的运行环境。
+角色包原来只能在电脑上算。0.3.0 起 iPad 上也能算（第 4.6 节）：HuBERT、声纹模型、音色编码器另外做成 ONNX，共约 350MB，用户想在 iPad 上加角色时才需要拷进去。电脑上的做法（第 4.5 节）照旧可用，两边算出来的角色包格式相同。
+
+文本处理用 JavaScript 写，是因为它能在电脑上用 Node 对照原版 Python 逐句验证，iPad 上又不需要额外的运行环境。
 
 ## 3. 目录
 
@@ -80,7 +90,8 @@ ONNX 模型 ──────── 拷进 App ────────┘     
 | `project.yml` | XcodeGen 工程描述。Xcode 工程由它生成，不进仓库 |
 | `.github\workflows\build.yml` | 自动编译和测试 |
 | `README.md`、`NOTICE.md` | 项目说明；第三方代码和数据的来源 |
-| `work\`（不进仓库） | `onnx\` 转换后的模型；`ipad\models`、`ipad\voices`、`ipad\bert` 要拷到 iPad 的文件；`presets.json` 角色清单；`out\` 合成结果；`tmp\`、`cache\` |
+| `tools\templates\` | 在 iPad 上加角色用的两个模型的**空模板**（只有计算图，权重全部去掉），给 GitHub 上的测试填随机权重用 |
+| `work\`（不进仓库） | `onnx\` 转换后的模型；`ipad\models`、`ipad\voices`、`ipad\bert`、`ipad\voice` 要拷到 iPad 的文件；`presets.json` 角色清单；`out\` 合成结果；`tmp\`、`cache\` |
 | `D:\ios\builds\GPTSovits-v*\` | 下载好的安装包和安装说明（仓库之外） |
 
 ## 4. 模型
@@ -105,7 +116,7 @@ ONNX 模型 ──────── 拷进 App ────────┘     
 | `t2s_first_stage_decoder_fp32.onnx` | `t2s_shared_fp32.bin` 307MB | `x`，`prompts` | `y`，`y_emb`，24 层的 `present_k_layer_i`、`present_v_layer_i` |
 | `t2s_stage_decoder_fp32.onnx` | 同上（两个解码器共用） | `iy`，`iy_emb`，24 层的 `past_k_layer_i`、`past_v_layer_i` | `y`，`y_emb`，`stop_flag` i64 标量，24 层的 `present_*` |
 | `vits_fp32.onnx` | `vits_fp32.bin` 249MB | `text_seq` i64 [1,T]，`pred_semantic` i64 [1,1,N]，`ge` f32 [1,1024,1]，`ge_advanced` f32 [1,512,1] | `audio` f32，32kHz |
-| `prompt_encoder_fp32.onnx`（只在电脑上用） | `prompt_encoder_fp32.bin` 88.5MB | `ref_audio` f32 [1,L]（32kHz），`sv_emb` f32 [1,20480] | `ge`，`ge_advanced` |
+| `prompt_encoder_fp32.onnx`（只在加角色时用，iPad 上的那份在 `work\ipad\voice\`） | `prompt_encoder_fp32.bin` 88.5MB | `ref_audio` f32 [1,L]（32kHz），`sv_emb` f32 [1,20480] | `ge` [1,1024,1]，`ge_advanced` [1,512,1] |
 
 推理步骤（`App\SynthEngine.swift`，与 `tools\ref_pipeline.py` 的 `OnnxSynth` 一一对应）：
 
@@ -128,7 +139,7 @@ ONNX 模型 ──────── 拷进 App ────────┘     
 | `ssl_content` | f32 [1,768,S] | 参考音频的 HuBERT 特征，50 帧每秒 |
 | `ge`、`ge_advanced` | f32 [1,1024,1]、[1,512,1] | 音色编码器的输出 |
 
-`meta` 里有 `name`（界面上显示的名字）和 `lang`（`ja` 或 `zh`）。文件名前面的序号决定显示顺序。
+`meta` 里有 `name`（界面上显示的名字）和 `lang`（`ja` 或 `zh`）；iPad 上做的还有 `source: ipad`。文件名决定显示顺序：电脑上做的以 `01_` 这类序号开头，iPad 上做的以 `u` 开头，排在后面。Swift 端的写法是 `TensorPack.write`，与 `gsvpack.py` 的 `write_pack` 相同（头部补空格让数据区 8 字节对齐）。
 
 ### 4.4 中文语调模型
 
@@ -155,6 +166,36 @@ Hugging Face 上 Genie 发布的 `RoBERTa.onnx`（599MB）是另一个现成的�
 
 预处理与原版一致（`ref_pipeline.py` 的 `build_voice`）：参考音频去掉结尾静音、补 0.3 秒静音后送 HuBERT；32kHz 音频加声纹向量送音色编码器。
 
+### 4.6 在 iPad 上算角色包
+
+`tools\export_voice_models.py export` 从 `D:\k\models` 的 PyTorch 原版导出两个模型到 `work\ipad\voice\`，并把音色编码器复制过去：
+
+| 文件 | 来源 | 输入 | 输出 |
+| --- | --- | --- | --- |
+| `hubert.onnx` 189MB | `chinese-hubert-base`，取最后一层 | `waveform` f32 [1,N]（16kHz） | `ssl_content` f32 [1,768,帧数]，每 20 毫秒一帧 |
+| `sv.onnx` 91MB | ERes2NetV2（`sv\pretrained_eres2netv2w24s4ep4.ckpt`）的 `forward3` | `fbank` f32 [1,帧数,80] | `sv_emb` f32 [1,20480] |
+| `prompt_encoder_fp32.onnx` + `.bin` | 第 4.2 节的那个 | | |
+
+两个模型是 `torch.onnx.export`（opset 17）导的，它们不大，这台电脑的内存够用。权重按半精度存、图里转回单精度（与语调模型同样的做法，运行时内存按单精度算）。
+
+**fbank 不在模型里。** 原版调用 `torchaudio.compliance.kaldi.fbank(wav, num_mel_bins=80, sample_frequency=16000, dither=0)`，这一步在 `tools\fbank_ref.py`（numpy）和 `App\Fbank.swift` 里各写了一遍：25 毫秒窗、10 毫秒步长、每帧去直流、预加重 0.97、Povey 窗、补零到 512 点 FFT、80 个 mel 三角滤波器（20Hz 到 8kHz）、取对数（下限是单精度的 eps）。
+
+App 里的步骤（`App\VoiceBuilder.swift`，与 `build_voice` 一一对应）：
+
+1. 读录音（`AVAudioFile`，wav、mp3、m4a、flac 等），多声道取平均。1 秒以下、30 秒以上直接拒绝；界面上建议 3–10 秒。
+2. 语气：重采样到 16kHz，去掉结尾静音（`tailOffset`，与原版 `_find_threshold_offsets` 相同），补 0.3 秒静音，送 HuBERT。
+3. 音色：重采样到 32kHz，峰值超过 1 时除以 min(2, 峰值)；再降到 16kHz 算 fbank，送声纹模型；32kHz 音频和声纹向量送音色编码器。
+4. 参考文字：`GSV.reference(text, lang)`，整段一起转、不切句、不加前导句号（原版处理参考文本就是这样）。中文装了语调模型时算真特征，否则全零。
+5. 写成 `.gsvpack`，存进文档目录的 `voices\`。
+
+重采样用的是系统的 `AVAudioConverter`（最高质量），原版用 torchaudio 的 sinc 插值。两者的滤波器不同，差别在频带边缘，不影响特征的用途，但**数值上不是逐位一致的**。
+
+内存：三个模型**一个用完放掉再载入下一个**（`runAll` 里包在 `autoreleasepool` 中）。开始算之前先把中文语调模型放掉（它最大），下次合成中文时会重新载入。
+
+验证（电脑上，`export_voice_models.py check`）：用 ONNX 模型和 numpy 版 fbank 重算第一个角色，与 PyTorch 算的角色包比：语气特征最大绝对差 4.3e-4，音色向量的余弦相似度 0.9999995。`fbank_ref.py` 与 torchaudio 的最大差 8.7e-5。`App\Fbank.swift` 的算法（含自写的 FFT）用 Python 逐行抄一遍和参考实现比，最大差 1.0e-4。iPad 上的整条流程只在模拟器上用随机权重跑过，**真机上没有试过，加出来的角色好不好听也没有人听过**。
+
+空模板：`export_voice_models.py templates` 从导出的模型去掉全部浮点权重（只留单个数的常数），存到 `tools\templates\`，各约 200KB。GitHub 上的测试用 `onnx_pack.fill_random` 往里填随机数。
+
 ## 5. 文本处理
 
 ### 5.1 结构
@@ -176,6 +217,7 @@ Hugging Face 上 Genie 发布的 `RoBERTa.onnx`（599MB）是另一个现成的�
 
 - `GSV.g2p(text, lang)` → `{norm, phones, ids, word2ph}`。与原版 `text_to_phonemes` 逐音素一致。`word2ph` 只有中文有，是规范化文本里每个字对应的音素数。
 - `GSV.prepare(text, lang)` → `[{text, ids, pause, bertIds, bertRepeats}]`。整段文字切成可以逐个合成的片段。后两项只有中文有，是中文语调模型的输入；重复次数之和必须等于音素数，对不上就不给。`GSV.prepareJSON` 是给 Swift 用的版本，出错时返回 `{"error": ...}`。
+- `GSV.reference(text, lang)` → `{ids, bertIds, bertRepeats}`。加角色时处理录音里说的话：去掉引号，整段一起转，没有能读出来的内容时报错。`GSV.referenceJSON` 是给 Swift 用的版本。
 
 语种由调用方指定（`ja` 或 `zh`），没有做自动判断。App 里默认跟随角色的语种，可以手动切换。
 
@@ -256,14 +298,19 @@ void gsv_free(char *ptr);
 | 文件 | 职责 |
 | --- | --- |
 | `GSVPadApp.swift` | 入口 |
-| `RootView.swift` | 界面（SwiftUI）。模型或角色包不全时显示拷贝说明 |
-| `Theme.swift` | 颜色、字体、按钮样式 |
-| `AppModel.swift` | 界面状态和合成流程。扫描文档目录找模型和角色包，预热，逐句合成，写日志 |
-| `TextFrontend.swift` | 建 JavaScriptCore 环境，注入 `__jaLabels`、`__loadText`，加载脚本，调用 `GSV.prepareJSON` |
+| `RootView.swift` | 主界面（SwiftUI）。7 个模型不全时显示拷贝说明；一个角色都没有时直接显示「添加角色」 |
+| `AddVoiceView.swift` | 「添加角色」表单 |
+| `Theme.swift` | 颜色、字体、按钮样式，以及两个界面共用的 `LabeledRow`、`ChoiceText` |
+| `AppModel.swift` | 界面状态和流程。扫描文档目录找模型、角色包、录音，预热，逐句合成，加角色、删角色，写日志 |
+| `TextFrontend.swift` | 建 JavaScriptCore 环境，注入 `__jaLabels`、`__loadText`，加载脚本，调用 `GSV.prepareJSON`、`GSV.referenceJSON` |
 | `SynthEngine.swift` | ONNX Runtime 推理 |
 | `BertEngine.swift` | 中文语调模型：字符编号 → 按音素展开的特征 |
-| `TensorPack.swift` | 读 `.gsvpack` |
+| `TensorPack.swift` | 读写 `.gsvpack` |
 | `AudioOutput.swift` | `AudioPost`（裁剪、淡入淡出，与原版 `_trim_audio`、`_fade` 相同）、`StreamPlayer`（AVAudioEngine 排队播放）、`WavWriter` |
+| `Enhancer.swift` | 音频增强，见 7.1 |
+| `AudioLoader.swift` | 读录音、混成单声道、重采样 |
+| `Fbank.swift` | 声纹模型的输入特征，见 4.6 |
+| `VoiceBuilder.swift` | 录音 + 文字 → 角色包的五个张量，见 4.6 |
 
 实现要点：
 
@@ -277,6 +324,26 @@ void gsv_free(char *ptr);
 - **中文语调模型是可选的**。文档目录里有 `roberta_fp16.onnx` 就用，没有就用全零特征，界面上选中文时会提示。它载入后占 1GB 以上内存，所以只在第一次合成中文时才载入，之后一直留着。载入或计算失败都只记日志、退回全零，不中断合成。
 - **`ORTValue.tensorData()` 返回的数据直接指向那个 `ORTValue` 内部的内存**，不持有它。直接用指针读的地方要用 `withExtendedLifetime` 保住它（`BertEngine` 里是这样）；`as Data` 会复制一份，所以 `SynthEngine` 里没事。
 - 每次合成结束时把内存占用写进日志。
+- **回到前台时自动重新检查文档目录**（`scenePhase` 变成 active），用数据线拷完文件不用再点按钮。
+- `使用说明.txt` 每次启动都会按当前版本重写（内容不同时）。
+
+### 7.1 音频增强
+
+与电脑上网页界面（`D:\k\web.py` 的 `enhance_audio`，pedalboard + pyloudnorm）相同的处理：一阶高通 80Hz → 300Hz 峰值 +2.5dB（Q 1）→ 7kHz 峰值 −3dB（Q 2）→ 压缩器（阈值 −18dB、3.5:1、起音 1 毫秒、释放 100 毫秒）→ 很轻的混响（房间 0.1、阻尼 0.5、湿 0.03、干 0.97）→ +2dB → 按 BS.1770 把响度统一到 −18 LUFS。
+
+- `tools\enhance_ref.py` 用 numpy 逐样本写了一遍，与 pedalboard + pyloudnorm 的输出对照，最大差 3e-5。`App\Enhancer.swift` 照着它逐行写，模拟器测试拿参考实现的输出比（相对误差要小于 1e-3）。
+- 网页界面是整段合成完再处理，iPad 上是合成一句播一句，所以是**流式**的：滤波器、压缩器、混响的状态跨片段延续；响度按「到目前为止的全部音频」量，再定当前片段的增益。第一个片段不足 0.4 秒量不出响度时，按峰值 −6dB 处理。
+- 量过：模型直接输出的音频约 −31 LUFS，比网页界面开着增强时轻 13dB 左右。这就是做这个开关的原因。
+- 默认打开，选择存在 `UserDefaults`（键 `enhance`）。增强作用在片段加上后面的停顿上，混响的尾音才有地方落。
+
+### 7.2 在 iPad 上加角色
+
+用户想要的是「加角色不用电脑」。界面上：角色一行下面有「＋ 添加角色」「删除这个角色」（删除前有确认框）。表单里选录音、填名字、选录音的语种、填录音里说的话，点「生成角色」。
+
+- 录音的来源有两个：用数据线拷进文档目录的音频文件会直接列出来（`outputs\` 里的不算）；或者「从『文件』App 里选」。后者给的位置只能临时读，先拷到临时目录。
+- 录音旁边有同名的 `.txt` 时，自动填进「录音里说的话」；名字默认取文件名。
+- 缺 `work\ipad\voice\` 的 4 个文件时，表单换成拷贝说明。音色编码器的 `.onnx` 只记着权重文件名，`.onnx` 和 `.bin` 必须在同一个文件夹，`refresh` 里专门检查了。
+- 算完后自动选中新角色，语言跟着切换。在模拟器上（随机权重）整个过程几秒；真机没量过。
 
 依赖：ONNX Runtime 的 Swift 包 1.24.2（模块名 `OnnxRuntimeBindings`）；JavaScriptCore、AVFoundation（系统自带）；Rust 静态库。
 
@@ -298,8 +365,10 @@ Python 环境在 `tools\.venv`，由 `D:\k\env`（Python 3.11、PyTorch 2.10）�
 | `asr_check.py 文件夹` | 用 `D:\k\models\qwen3_asr` 转写一个文件夹里的 wav |
 | `probe_first_sentence.py` | 检查漏读第一句 |
 | `onnx_pack.py`、`gsvpack.py` | 写 ONNX 权重和角色包的公共代码，只依赖 numpy 和 onnx |
-| `ci_fixtures.py` | 生成模拟器测试用的随机权重模型、假角色包和 1 层的假语调模型 |
+| `ci_fixtures.py` | 生成模拟器测试用的随机权重模型、假角色包、1 层的假语调模型、随机权重的加角色模型，以及音频增强、fbank 的标准答案和一个双声道 44.1kHz 的测试录音。`--run` 会在电脑上把随机模型都跑一遍 |
 | `export_bert.py`、`bert_onnx.py` | 生成中文语调模型的 ONNX 和字表；与原版对照。见第 4.4 节 |
+| `export_voice_models.py export`、`templates`、`check` | 导出加角色用的两个模型；生成空模板；与 PyTorch 对照。见第 4.6 节 |
+| `fbank_ref.py`、`enhance_ref.py` | fbank 和音频增强的 numpy 参考实现，Swift 版照着它们写 |
 
 导入 `pyopenjtalk` 之前必须先设好 `OPEN_JTALK_DICT_DIR`，否则它会自己联网下载词典、卡很久。`make_golden.py` 里已经处理。
 
@@ -307,7 +376,7 @@ Python 环境在 `tools\.venv`，由 `D:\k\env`（Python 3.11、PyTorch 2.10）�
 
 ### 9.1 自动编译
 
-推送到 `main` 且改动了 `App\`、`Config\`、`Tests\`、`native\`、`frontend\`、`project.yml`、工作流文件或三个公共 Python 模块时触发。只改文档不触发。全程约 6 分钟（有缓存时）。
+推送到 `main` 且改动了 `App\`、`Config\`、`Tests\`、`native\`、`frontend\`、`project.yml`、工作流文件、`tools\templates\` 或测试用到的几个 Python 模块（列表见 `build.yml` 的 `paths`）时触发。只改文档不触发。全程约 6 分钟（有缓存时）。
 
 步骤：编译 Rust 库（真机、模拟器、本机工具）→ Node 对照测试（只出报告）→ XcodeGen 生成工程 → 编译未签名的真机版并打成 IPA，**检查 Info.plist 里有文件共享的两项，缺了算失败** → 生成随机权重的测试模型 → 在 iPad 模拟器上跑 `SmokeTests`（只出报告）→ 把产物传到名为 `ci` 的 Release。
 
@@ -345,6 +414,11 @@ https://gh-proxy.com/https://github.com/lunar0cean/gsv-ipad/releases/download/ci
 | `testFrontendMatchesNode` | 样本里的每段中日文，JavaScriptCore 的结果要与 Node 算出的逐音素相同。同时验证了 iOS 版 Rust 库与本机版给出的标签相同 |
 | `testSynthesisRunsEndToEnd` | 文字 → 音素 → 编码 → 解码循环 → 声码器 → WAV 文件，再测一次取消；然后载入假语调模型，检查特征的长度正好等于音素数乘 1024，带着它再合成一句中文 |
 | `testAudioPostHandlesEdgeCases` | 空输入、极短输入、含非有限数值的输入 |
+| `testEnhancerMatchesReference` | 音频增强连续处理三个片段（中间一个不足 0.4 秒），与 `enhance_ref.py` 的结果比 |
+| `testReferenceTextMatchesNode` | 加角色时参考文字的处理，与 Node 的结果比 |
+| `testFbankMatchesReference` | fbank 与 `fbank_ref.py` 的结果比 |
+| `testTailOffset` | 结尾静音的长度，有精确答案 |
+| `testVoiceBuiltOnDevice` | 读双声道 44.1kHz 的 wav、重采样、跑三个随机权重的模型、写角色包、读回来核对、再用它合成一句中文 |
 
 它验证的是流程，不是音质，耗时也不代表真机（随机权重、共享虚拟机）。界面和播放没有测试覆盖。
 
@@ -354,7 +428,8 @@ https://gh-proxy.com/https://github.com/lunar0cean/gsv-ipad/releases/download/ci
 2. 在 iPad 上打开一次 App。
 3. 电脑上打开「Apple 设备」→ 左边「文件」→ App 列表里选「GPT Sovits」→ 把 `work\ipad\models` 里的 7 个文件和 `work\ipad\voices` 里的角色包加进去。按苹果的说明有两种加法：点「添加文件」按钮，或者把文件拖到 App 列表里的名字上。**往右边的文档列表里拖是拖不进去的**，用户在这里卡过。用户最后传成功了，但用的是哪一种我没有确认。文件不用放在文件夹里。
 4. 中文语调模型是同样的加法：`work\ipad\bert\roberta_fp16.onnx`，文件名不能改。
-5. 回到 App 点「重新检查」。
+5. 想在 iPad 上加角色，再加 `work\ipad\voice\` 里的 4 个文件（约 350MB）。录音也可以这样拷进去，旁边放同名的 `.txt` 写上录音里说的话。
+6. 回到 App，会自动重新检查。
 
 装好的安装包和给用户看的说明在 `D:\ios\builds\GPTSovits-v*\`。
 
@@ -416,6 +491,8 @@ https://gh-proxy.com/https://github.com/lunar0cean/gsv-ipad/releases/download/ci
 | 东西 | 说明 |
 | --- | --- |
 | `App\SynthEngine.swift`、`BertEngine.swift`、`TensorPack.swift`、`TextFrontend.swift`、`AudioOutput.swift` | 核心，不依赖界面。`AppModel.swift` 里的合成流程可以照着改写 |
+| `App\Enhancer.swift` | 可选，音频增强 |
+| `App\VoiceBuilder.swift`、`Fbank.swift`、`AudioLoader.swift` | 可选，在设备上加角色。用法见 `AppModel.addVoice` |
 | `App\Frontend\` 下的 8 个文件 | 作为资源打进包里 |
 | `App\Native\gsv_native.h` 和 `native\` | 桥接头文件和 Rust 库 |
 | ONNX Runtime 的 Swift 包 | `https://github.com/microsoft/onnxruntime-swift-package-manager`，1.24.2，产品名 `onnxruntime` |
@@ -448,7 +525,7 @@ for segment in try frontend.prepare(text, language: "ja") {
 - **`.js` 文件的构建阶段**：Xcode 默认可能把 `.js` 当源码处理。`project.yml` 里用 `buildPhase: resources` 明确指定了。
 - **文件共享**：要让用户从电脑拷模型，Info.plist 里必须有 `UIFileSharingEnabled` 和 `LSSupportsOpeningDocumentsInPlace`。**`INFOPLIST_KEY_UIFileSharingEnabled` 这种写法 Xcode 不认**，要写在真实的 Info.plist 文件里（0.1 版就栽在这里）。
 - **只有 arm64**：Rust 库只编了 arm64 的真机和模拟器，没有 x86_64 模拟器。
-- **内存**：主模型全精度约 570MB，加上运行时和中文词典，估计常驻 1GB 上下；用到中文语调模型时再加约 1.2GB。都没有在真机上量过。目标程序如果本身占内存多，要留意。
+- **内存**：主模型全精度约 570MB，加上运行时和中文词典，估计常驻 1GB 上下；用到中文语调模型时再加约 1.2GB；加角色时临时再加几百 MB（三个模型轮流载入，最大的 HuBERT 约 380MB）。都没有在真机上量过。目标程序如果本身占内存多，要留意。
 - **耗时操作都别放主线程**：建 `SynthEngine` 在模拟器上要 7–9 秒，真机没量过；第一次处理中文要载入词典。
 - **`SynthEngine` 和 `BertEngine` 都不是线程安全的**，同一时间只在一个线程上用。
 - **`D:\ios\reader`（「页间」阅读器）** 是用户另一个 iPad 程序，同样用 XcodeGen 和 GitHub Actions，最可能是并入的目标。它的仓库和这个仓库是分开的。
@@ -461,7 +538,10 @@ for segment in try frontend.prepare(text, language: "ja") {
 
 | 事项 | 做法和估计 |
 | --- | --- |
+| 在真机上试加角色 | 0.3.0 的新功能，真机上没跑过。用户试过后看 `outputs\log.txt` 里「新建角色」那一行（用时、内存）。如果闪退，先怀疑内存：HuBERT 运行时约 380MB |
+| 听 iPad 上加的角色 | 与电脑上同一段录音做的角色包比一比，重采样不同（4.6 节）可能有细微差别 |
 | 量中文带语调模型时的速度 | 日文的速度已经有了（第 10 节）。中文的让用户报「完成」那一行的两个数字，或取 `outputs\log.txt` |
+| ASMR 之类的特殊风格 | 用户问过怎么复刻 ASMR 的感觉。回答是底模加参考音频做不到位，要用官方 GPT-SoVITS 整合包对 v2ProPlus 做微调，App 也要改成能装多套模型。用户还没决定，没有动手 |
 | 确认语调模型在真机上的内存和耗时 | 让用户合成一段中文后取 `outputs\log.txt`，里面有载入用时和内存占用 |
 | 语调模型占内存太多时 | 两个没试过的方向：把权重做成 8 位整数量化（文件约 300MB，内存也相应减少，特征会有误差，要听效果）；或者先把所有片段的特征算完就卸载模型，代价是每次合成中文都要重新载入 |
 | 提速 | 现在约 1.2 倍实时，边合成边播放基本够用，不急。没试过的方向：线程数 3 或 4；声码器换 CoreML 或 XNNPACK 执行器；权重半精度或量化 |
@@ -487,6 +567,9 @@ for segment in try frontend.prepare(text, language: "ja") {
 | 行尾的引号被切成空片段 | 见第 10.1 节 |
 | `torch.onnx.export` 导大模型太吃内存 | 结构规整的模型可以直接拼计算图，见 `tools\bert_onnx.py` |
 | `ORTValue.tensorData()` 不持有 `ORTValue` | 用指针读之前保住它的生命周期，见第 7 节 |
+| 空模板里残留了真权重 | 只去掉大于 256 个数的权重时，声纹模型里 126 个小的卷积偏置（融合了批归一化）还留着真数值。现在 `strip_weights` 去掉全部多于一个数的浮点权重 |
+| `AVAudioConverter` 的 `primeMethod = .none` | 是「有延迟」模式，输出会整体后移。用默认值才是对齐的 |
+| PowerShell 的 `Set-Content -Encoding utf8` 会写 BOM | 写 Python 或 JS 文件不要用它，或写完去掉开头的三个字节 |
 
 ## 14. 相关文档
 

@@ -12,7 +12,7 @@
 
 | 环节 | 在哪里跑 | 怎么做 |
 | --- | --- | --- |
-| 参考音频 → 角色包 | 电脑 | HuBERT 语义特征、声纹、音色向量、参考文本特征预先算好，存成 `.gsvpack` |
+| 参考音频 → 角色包 | 电脑或 iPad | HuBERT 语义特征、声纹、音色向量、参考文本特征算好存成 `.gsvpack`。电脑上用原版 PyTorch；iPad 上用导出的 ONNX 模型（约 350MB，可选），fbank 特征用 Swift 计算 |
 | 文字 → 音素 | iPad | `App\Frontend\*.js`，由系统自带的 JavaScriptCore 运行。日文的分词、读音、重音来自 `native\` 里的 Rust 库（[jpreprocess](https://github.com/jpreprocess/jpreprocess)，OpenJTalk 的 Rust 重写） |
 | 中文语调特征 | iPad | 可选。`chinese-roberta-wwm-ext-large` 的前 22 层，571MB，只在输入中文时用 |
 | 音素 → 语义 → 波形 | iPad | Swift + ONNX Runtime。计算图用 [Genie-TTS](https://github.com/High-Logic/Genie-TTS) 的模板，权重取自本机底模，共约 570MB |
@@ -27,12 +27,15 @@
 | 日文文本处理 | 完成。JS 移植与原版逐音素一致（40 句样本）；jpreprocess 给出的标签在这些样本上也与电脑上的 OpenJTalk 完全一致 |
 | 中文文本处理 | 完成。JS 移植与原版逐音素一致（121 句样本，另有 2998 句随机生成的压力测试）。英文单词暂时会被跳过 |
 | App：选角色、输入文字、边合成边播放、导出音频 | 已在 A16 iPad 上跑通，能合成中文和日文，速度约为实时的 1.2 倍。每次推送都在 iPad 模拟器上跑端到端冒烟测试（见下） |
-| 中文语调模型（RoBERTa） | 0.2.0 接入。ONNX 版与原版 PyTorch 数值一致；模型文件可选，没有时退回全零特征。真机上的内存占用和听感还没有验证 |
+| 中文语调模型（RoBERTa） | 0.2.0 接入。ONNX 版与原版 PyTorch 数值一致；模型文件可选，没有时退回全零特征。真机上的内存占用还没有量过 |
+| 音频增强 | 0.2.1 接入，界面上可开关。与电脑网页界面的同名选项算法相同（均衡、压缩、轻混响、响度统一到 −18 LUFS），改成了逐句流式处理 |
+| 在 iPad 上加角色 | 0.3.0 接入。选一段录音、填上录音里说的话就生成角色包。ONNX 模型与原版对照过（语气特征最大差 4e-4，音色向量余弦相似度 0.9999995）；整条流程在模拟器上用随机权重测过，真机上还没试 |
 
 每次推送后 GitHub 会在 iPad 模拟器上跑 `Tests\SmokeTests.swift`：
 
 - 文本处理：样本里的每段中日文在 JavaScriptCore 里的结果，要与 Node 算出的逐个音素相同。
 - 推理：真模型不在仓库里，所以用随机权重填出结构相同的模型（`tools\ci_fixtures.py`），把「文字 → 音素 → 编码 → 解码循环 → 声码器 → 音频文件」整条流程跑一遍。合成出来的是噪声，验证的是流程，不是音质，也不代表真机速度。
+- 加角色：读一段双声道录音、重采样、算 fbank、跑三个随机权重的模型、写出角色包再用它合成。fbank 和音频增强与 numpy 参考实现逐值对照。
 
 已知情况：
 
@@ -49,6 +52,7 @@
 | `frontend\test\` | 文本处理的对照样本和测试 |
 | `Tests\` | 在 iPad 模拟器上跑的冒烟测试 |
 | `tools\` | 电脑端的 Python 脚本 |
+| `tools\templates\` | 加角色用的两个模型的空模板（只有计算图，没有权重），给自动测试填随机权重 |
 | `project.yml` | XcodeGen 工程描述 |
 | `.github\workflows\build.yml` | 自动编译。产物挂在名为 `ci` 的 Release 上 |
 | `work\`（不进仓库） | `onnx\` 转换后的模型，`ipad\` 要拷到 iPad 的文件，`presets.json` 要导出的角色，`out\` 合成结果 |
@@ -69,7 +73,9 @@ Python 环境在 `tools\.venv`，由 `D:\k\env` 创建并共用它的包，另�
 | `asr_check.py <文件夹>` | 用本机的语音识别模型转写合成结果，检查内容有没有读对 |
 | `export_bert.py`、`bert_onnx.py` | 生成中文语调模型的 ONNX（直接拼计算图，不用 `torch.onnx.export`）和字表，并与原版对照 |
 | `onnx_pack.py`、`gsvpack.py` | 写 ONNX 权重和角色包的公共代码，只依赖 numpy 和 onnx |
-| `ci_fixtures.py` | 生成模拟器测试用的随机权重模型和假角色包 |
+| `ci_fixtures.py` | 生成模拟器测试用的随机权重模型、假角色包和各项标准答案 |
+| `export_voice_models.py` | 导出 iPad 上加角色用的 HuBERT 和声纹模型（ONNX），生成空模板，并与 PyTorch 对照 |
+| `fbank_ref.py`、`enhance_ref.py` | fbank 特征和音频增强的 numpy 参考实现 |
 
 文本处理的测试不需要 Python：
 
@@ -93,5 +99,5 @@ node D:\ios\gsv-ipad\frontend\test\test_zh.js
 
 1. 每次推送后 GitHub 自动编译。安装包在 [ci Release](https://github.com/lunar0cean/gsv-ipad/releases/tag/ci) 的 `GSVPad-unsigned.ipa`；同一处的 `build-info.txt` 记着对应的提交，`errors.txt` 是报错摘要，`parity.txt` 是文本处理的对照结果，`sim-test.txt` 是模拟器测试的结果。
 2. 用 Sideloadly 和自己的 Apple ID 签名安装。
-3. 在电脑的「Apple 设备」里点「文件」，选「GPT Sovits」，把 `work\ipad\` 里 `models` 和 `voices` 两个文件夹中的文件加进去：用「添加文件」按钮，或者拖到 App 的名字上。往文档列表里拖是拖不进去的。中文语调模型 `work\ipad\bert\roberta_fp16.onnx` 也这样加进去，它是可选的。
-4. 打开 App，选角色、输入文字、点「生成」。
+3. 在电脑的「Apple 设备」里点「文件」，选「GPT Sovits」，把 `work\ipad\models` 里的 7 个文件加进去：用「添加文件」按钮，或者拖到 App 的名字上。往文档列表里拖是拖不进去的。可选的几样也这样加：`work\ipad\voices` 里电脑上做好的角色包；中文语调模型 `work\ipad\bert\roberta_fp16.onnx`；在 iPad 上加角色要用的 `work\ipad\voice` 里的 4 个文件。
+4. 打开 App，选角色、输入文字、点「生成」。要加角色，点「＋ 添加角色」，选一段 3–10 秒的录音，填上录音里说的话。

@@ -14,5 +14,9 @@
 | `native/`（编译时取得） | [jpreprocess](https://github.com/jpreprocess/jpreprocess)（BSD-3-Clause）和它内置的 naist-jdic 词典 | 日文分词、读音和重音 |
 | App（编译时取得） | [ONNX Runtime](https://github.com/microsoft/onnxruntime)（MIT） | 模型推理 |
 | `tools/convert_models.py` 用到的计算图模板（不在仓库里） | [Genie-TTS](https://github.com/High-Logic/Genie-TTS) | 从本机安装的 genie-tts 包里读取 |
+| `tools/templates/hubert.onnx` | [chinese-hubert-base](https://github.com/TencentGameMate/chinese_speech_pretrain)（经由 GPT-SoVITS） | 只有计算图，权重已全部去掉 |
+| `tools/templates/sv.onnx` | [3D-Speaker](https://github.com/modelscope/3D-Speaker) 的 ERes2NetV2（经由 GPT-SoVITS） | 只有计算图，权重已全部去掉 |
+| `App/Fbank.swift`、`tools/fbank_ref.py` | [torchaudio](https://github.com/pytorch/audio)（BSD-2-Clause）的 `compliance.kaldi.fbank` | 算法按源码重写 |
+| `App/Enhancer.swift`、`tools/enhance_ref.py` | [pedalboard](https://github.com/spotify/pedalboard)（GPL-3.0）底层的 [JUCE](https://github.com/juce-framework/JUCE) 算法，[pyloudnorm](https://github.com/csteinmetz1/pyloudnorm)（MIT） | 按公式重写，没有复制代码 |
 
 模型权重和角色音频不在这个仓库里。
