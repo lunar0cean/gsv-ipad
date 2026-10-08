@@ -260,9 +260,11 @@ final class SmokeTests: XCTestCase {
         }
         XCTAssertEqual(storedIds, reference.ids)
         let storedBert = try pack.value("ref_bert")
-        withExtendedLifetime(storedBert) {
-            XCTAssertEqual(try storedBert.tensorData() as Data, refBert as Data)
+        let storedBertData: Data = try withExtendedLifetime(storedBert) {
+            let raw = try storedBert.tensorData()
+            return Data(bytes: raw.bytes, count: raw.length)
         }
+        XCTAssertEqual(storedBertData, refBert as Data)
 
         let engine = try SynthEngine(modelDirectory: directory.appendingPathComponent("models"), threads: 2, maxSteps: 40)
         let text = try XCTUnwrap(try frontend.prepare("你好，很高兴认识你。", language: "zh").first)
