@@ -38,3 +38,13 @@ const { GSV } = loadFrontend((segment) => labels.get(segment) || "");
 const expected = cases.map((item) => ({ ...item, segments: GSV.prepare(item.text, item.lang) }));
 fs.writeFileSync(out, JSON.stringify(expected));
 console.log(`标准答案 ${expected.length} 段文字 -> ${out}`);
+
+// 参考文字的处理（在 iPad 上新建角色时用）。日文句子取样本里不带逗号顿号的整句，
+// 这样它问到的片段在上面已经算过标签
+const referenceCases = [
+  ...read("ja_sentences.txt").slice(0, 8).map((text) => ({ text, lang: "ja" })),
+  ...read("zh_sentences.txt").slice(0, 8).map((text) => ({ text, lang: "zh" })),
+].map((item) => ({ ...item, ...GSV.reference(item.text, item.lang) }));
+const referenceOut = path.join(path.dirname(out), "expected_reference.json");
+fs.writeFileSync(referenceOut, JSON.stringify(referenceCases));
+console.log(`参考文字的标准答案 ${referenceCases.length} 句 -> ${referenceOut}`);

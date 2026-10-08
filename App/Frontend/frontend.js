@@ -216,6 +216,30 @@ var GSV = (function () {
     return segments;
   }
 
+  // 参考音频的文字 -> 音素编号，在 iPad 上新建角色时用。与原版处理参考文本的做法相同：
+  // 整段一起转，不切句，也不加前导句号
+  function reference(text, lang) {
+    var result = g2p(text.replace(QUOTES, "").trim(), lang);
+    if (!isSpeakable(result.phones)) {
+      throw new Error("参考文字里没有能读出来的内容");
+    }
+    var out = { ids: result.ids };
+    var bert = result.word2ph ? GSV_ZH.bertInput(result.norm, result.word2ph) : null;
+    if (bert && bert.repeats.reduce(function (sum, n) { return sum + n; }, 0) === result.ids.length) {
+      out.bertIds = bert.ids;
+      out.bertRepeats = bert.repeats;
+    }
+    return out;
+  }
+
+  function referenceJSON(text, lang) {
+    try {
+      return JSON.stringify(reference(text, lang));
+    } catch (error) {
+      return JSON.stringify({ error: String(error && error.message ? error.message : error) });
+    }
+  }
+
   // 给 Swift 调用：出错时返回 {"error": "..."}，不抛异常
   function prepareJSON(text, lang) {
     try {
@@ -231,7 +255,9 @@ var GSV = (function () {
     g2p: g2p,
     cutText: cutText,
     prepare: prepare,
-    prepareJSON: prepareJSON
+    prepareJSON: prepareJSON,
+    reference: reference,
+    referenceJSON: referenceJSON
   };
 })();
 

@@ -37,8 +37,8 @@ targets:
         INFOPLIST_KEY_UILaunchScreen_Generation: "YES"
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: "YES"
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
-        MARKETING_VERSION: "0.2.1"
-        CURRENT_PROJECT_VERSION: "5"
+        MARKETING_VERSION: "0.3.0"
+        CURRENT_PROJECT_VERSION: "6"
         SUPPORTS_MACCATALYST: "NO"
         # native/ 里的 Rust 库：先由 cargo 编译成静态库，再在这里链接。真机和模拟器各一份
         SWIFT_OBJC_BRIDGING_HEADER: App/Native/gsv_native.h

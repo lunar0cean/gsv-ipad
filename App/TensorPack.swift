@@ -3,7 +3,7 @@ import OnnxRuntimeBindings
 
 /// tools/export_pack.py 写出的 .gsvpack 数据包，格式说明见那个脚本的开头。
 struct TensorPack {
-    struct Entry: Decodable {
+    struct Entry: Codable {
         let name: String
         let dtype: String
         let shape: [Int]
@@ -11,10 +11,18 @@ struct TensorPack {
         let length: Int
     }
 
-    private struct Header: Decodable {
+    private struct Header: Codable {
         let kind: String
         let meta: [String: String]
         let tensors: [Entry]
+    }
+
+    /// 要写进数据包的一个张量。`dtype` 是 "i64" 或 "f32"，`data` 是小端的原始字节。
+    struct Tensor {
+        let name: String
+        let dtype: String
+        let shape: [Int]
+        let data: Data
     }
 
     enum PackError: LocalizedError {
@@ -56,6 +64,28 @@ struct TensorPack {
         self.entries = Dictionary(header.tensors.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
         self.data = data
         self.blobStart = 8 + headerLength
+    }
+
+    /// 与 tools/gsvpack.py 的 write_pack 写法相同：头部补空格，让数据区按 8 字节对齐。
+    static func write(to url: URL, kind: String, meta: [String: String], tensors: [Tensor]) throws {
+        var entries: [Entry] = []
+        var offset = 0
+        for tensor in tensors {
+            entries.append(Entry(name: tensor.name, dtype: tensor.dtype, shape: tensor.shape,
+                                 offset: offset, length: tensor.data.count))
+            offset += tensor.data.count
+        }
+        var header = try JSONEncoder().encode(Header(kind: kind, meta: meta, tensors: entries))
+        header.append(contentsOf: [UInt8](repeating: 0x20, count: (8 - (8 + header.count) % 8) % 8))
+
+        var file = Data("GSVP".utf8)
+        let length = UInt32(header.count)
+        file.append(contentsOf: (0..<4).map { UInt8((length >> (8 * $0)) & 0xFF) })
+        file.append(header)
+        for tensor in tensors {
+            file.append(tensor.data)
+        }
+        try file.write(to: url, options: .atomic)
     }
 
     func shape(of name: String) -> [Int] {

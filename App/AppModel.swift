@@ -24,8 +24,15 @@ final class AppModel: ObservableObject {
     @Published var enhance: Bool = UserDefaults.standard.object(forKey: "enhance") as? Bool ?? true {
         didSet { UserDefaults.standard.set(enhance, forKey: "enhance") }
     }
+    /// 在 iPad 上加角色要用的模型还缺哪些
+    @Published var voiceModelsMissing: [String] = []
+    /// 拷进本 App 的录音，加角色时直接列出来选
+    @Published var recordings: [URL] = []
+
+    private static let audioExtensions: Set<String> = ["wav", "mp3", "m4a", "flac", "aac", "aif", "aiff", "caf"]
 
     private var modelDirectory: URL?
+    private var voiceModels: [String: URL] = [:]
     private var bertURL: URL?
     private var engine: SynthEngine?
     private var bertEngine: BertEngine?
@@ -39,7 +46,8 @@ final class AppModel: ObservableObject {
     // A16 有 2 个性能核，推理线程数与之对应
     private static let threads = 2
 
-    var ready: Bool { modelDirectory != nil && !presets.isEmpty }
+    var modelsReady: Bool { modelDirectory != nil }
+    var ready: Bool { modelsReady && !presets.isEmpty }
     var hasAudio: Bool { !lastSamples.isEmpty }
     var canGenerate: Bool {
         !busy && ready && selected != nil && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -58,13 +66,30 @@ final class AppModel: ObservableObject {
         var foundDirectory: URL?
         var foundBert: URL?
         var found: [VoicePreset] = []
+        var foundVoiceModels: [String: URL] = [:]
+        var encoders: [URL] = []
+        var foundRecordings: [URL] = []
         if let walker = fm.enumerator(at: docs, includingPropertiesForKeys: nil) {
             for case let url as URL in walker {
-                if url.lastPathComponent == "vits_fp32.onnx" {
+                let name = url.lastPathComponent
+                if name == "outputs" {
+                    walker.skipDescendants()  // 合成出来的音频不算录音
+                    continue
+                }
+                if name == "vits_fp32.onnx" {
                     foundDirectory = url.deletingLastPathComponent()
                 }
-                if url.lastPathComponent == BertEngine.fileName {
+                if name == BertEngine.fileName {
                     foundBert = url
+                }
+                if name == "hubert.onnx" || name == "sv.onnx" {
+                    foundVoiceModels[name] = url
+                }
+                if name == "prompt_encoder_fp32.onnx" {
+                    encoders.append(url)
+                }
+                if AppModel.audioExtensions.contains(url.pathExtension.lowercased()) {
+                    foundRecordings.append(url)
                 }
                 guard url.pathExtension == "gsvpack", let pack = try? TensorPack(url: url), pack.kind == "voice" else {
                     continue
@@ -79,7 +104,18 @@ final class AppModel: ObservableObject {
         let missingModels = SynthEngine.modelFiles.filter {
             !fm.fileExists(atPath: directory.appendingPathComponent($0).path)
         }
-        missingFiles = missingModels + (found.isEmpty ? ["voices 文件夹里的角色包（.gsvpack）"] : [])
+        missingFiles = missingModels
+
+        // 音色编码器的 .onnx 只记着权重文件的名字，两个文件必须在同一个文件夹
+        if let encoder = encoders.first(where: {
+            fm.fileExists(atPath: $0.deletingLastPathComponent().appendingPathComponent("prompt_encoder_fp32.bin").path)
+        }) {
+            foundVoiceModels["prompt_encoder_fp32.onnx"] = encoder
+        }
+        voiceModels = foundVoiceModels
+        voiceModelsMissing = ["hubert.onnx", "sv.onnx", "prompt_encoder_fp32.onnx"].filter { foundVoiceModels[$0] == nil }
+            .map { $0 == "prompt_encoder_fp32.onnx" ? "prompt_encoder_fp32.onnx 和 prompt_encoder_fp32.bin（放在一起）" : $0 }
+        recordings = foundRecordings.sorted { $0.lastPathComponent < $1.lastPathComponent }
 
         let newDirectory = missingModels.isEmpty ? directory : nil
         if modelDirectory != newDirectory {
@@ -94,10 +130,13 @@ final class AppModel: ObservableObject {
 
         // 文件名前面的序号决定显示顺序
         presets = found.sorted { $0.url.lastPathComponent < $1.url.lastPathComponent }
-        if !presets.contains(where: { $0.url == selected }), let first = presets.first {
-            select(first)
+        if !presets.contains(where: { $0.url == selected }) {
+            selected = nil
+            if let first = presets.first {
+                select(first)
+            }
         }
-        if self.ready, engine == nil, !busy {
+        if modelsReady, engine == nil, !busy {
             warmUp()
         }
     }
@@ -135,14 +174,18 @@ final class AppModel: ObservableObject {
 
     /// 只在后台队列上调用。队列是串行的，所以不会同时载入两份模型。
     private func loadIfNeeded(directory: URL) throws -> (TextFrontend, SynthEngine) {
-        let cached = DispatchQueue.main.sync { (self.frontend, self.engine) }
-        let frontend = try cached.0 ?? TextFrontend()
-        let engine = try cached.1 ?? SynthEngine(modelDirectory: directory, threads: AppModel.threads)
-        DispatchQueue.main.sync {
-            self.frontend = frontend
-            self.engine = engine
-        }
+        let frontend = try loadFrontendIfNeeded()
+        let engine = try DispatchQueue.main.sync(execute: { self.engine })
+            ?? SynthEngine(modelDirectory: directory, threads: AppModel.threads)
+        DispatchQueue.main.sync { self.engine = engine }
         return (frontend, engine)
+    }
+
+    /// 只在后台队列上调用。
+    private func loadFrontendIfNeeded() throws -> TextFrontend {
+        let frontend = try DispatchQueue.main.sync(execute: { self.frontend }) ?? TextFrontend()
+        DispatchQueue.main.sync { self.frontend = frontend }
+        return frontend
     }
 
     /// 只在后台队列上调用。中文语调模型载入后占 1GB 以上内存，所以只在第一次合成中文时才载入。
@@ -157,6 +200,100 @@ final class AppModel: ObservableObject {
                             CFAbsoluteTimeGetCurrent() - start, memoryFootprintMB()))
         DispatchQueue.main.sync { self.bertEngine = loaded }
         return loaded
+    }
+
+    /// 在 iPad 上新建角色：录音 + 录音里说的话 -> 角色包，存进 voices 文件夹。
+    /// `completion` 在主线程上调用，参数表示成没成功。
+    func addVoice(name: String, language: String, audio: URL, transcript: String,
+                  completion: @escaping (Bool) -> Void) {
+        guard !busy, voiceModelsMissing.isEmpty else { return }
+        let models = voiceModels
+        let bertURL = language == "zh" ? self.bertURL : nil
+        busy = true
+        status = "正在处理录音里的文字…"
+        UIApplication.shared.isIdleTimerDisabled = true
+
+        worker.async { [weak self] in
+            guard let self else { return }
+            let clock = CFAbsoluteTimeGetCurrent()
+            var created: URL?
+            var failure: String?
+            do {
+                let reference = try self.loadFrontendIfNeeded().reference(transcript, language: language)
+                var refBert: NSMutableData?
+                if let bertURL, let ids = reference.bertIds, let repeats = reference.bertRepeats {
+                    do {
+                        refBert = try self.loadBertIfNeeded(url: bertURL).features(ids: ids, repeats: repeats)
+                    } catch {
+                        AppModel.log("参考文字的语调特征没算出来：\(error.localizedDescription)")
+                    }
+                }
+                // 中文语调模型最占内存，接下来要依次载入三个模型，先把它放掉；下次合成中文时会重新载入
+                DispatchQueue.main.sync { self.bertEngine = nil }
+
+                let tensors = try VoiceBuilder.build(audio: audio, reference: reference, refBert: refBert,
+                                                     models: models, threads: AppModel.threads) { message in
+                    DispatchQueue.main.async { self.status = message }
+                }
+                let folder = AppModel.documents.appendingPathComponent("voices", isDirectory: true)
+                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                let url = folder.appendingPathComponent(AppModel.voiceFileName(for: name))
+                try TensorPack.write(to: url, kind: "voice", meta: ["name": name, "lang": language, "source": "ipad"],
+                                     tensors: tensors)
+                created = url
+                AppModel.log("新建角色「\(name)」：语言 \(language)，参考音素 \(reference.ids.count) 个，"
+                    + "语调特征 \(refBert == nil ? "未使用" : "已使用")，"
+                    + String(format: "用时 %.1f 秒，内存占用 %.0f MB", CFAbsoluteTimeGetCurrent() - clock, memoryFootprintMB()))
+            } catch {
+                failure = error.localizedDescription
+                AppModel.log("新建角色「\(name)」失败：\(error.localizedDescription)")
+            }
+
+            DispatchQueue.main.async {
+                UIApplication.shared.isIdleTimerDisabled = false
+                if let created {
+                    self.refresh()
+                    if let preset = self.presets.first(where: { $0.url == created }) {
+                        self.select(preset)
+                    }
+                    self.status = "已添加角色「\(name)」"
+                } else {
+                    self.status = "没有加成：\(failure ?? "未知错误")"
+                }
+                self.busy = false
+                completion(created != nil)
+            }
+        }
+    }
+
+    /// 角色包的文件名：u + 时间 + 名字里的字母和数字。u 排在电脑上做的 01_、02_ 后面
+    private static func voiceFileName(for name: String) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd_HHmmss"
+        var safe = String.UnicodeScalarView()
+        for scalar in name.unicodeScalars where CharacterSet.alphanumerics.contains(scalar) && safe.count < 24 {
+            safe.append(scalar)
+        }
+        return "u\(formatter.string(from: Date()))" + (safe.isEmpty ? "" : "_\(String(safe))") + ".gsvpack"
+    }
+
+    /// 录音旁边同名的 .txt（比如 ref.wav 和 ref.txt）里写的就是录音里说的话。
+    func transcript(for audio: URL) -> String? {
+        let url = audio.deletingPathExtension().appendingPathExtension("txt")
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    func delete(_ preset: VoicePreset) {
+        guard !busy else { return }
+        do {
+            try FileManager.default.removeItem(at: preset.url)
+            status = "已删除角色「\(preset.name)」"
+        } catch {
+            status = "删除失败：\(error.localizedDescription)"
+        }
+        refresh()
     }
 
     func generate() {
@@ -355,14 +492,19 @@ final class AppModel: ObservableObject {
     /// 文件夹里有东西，它才会出现在「文件」App 和 iTunes 的文件共享里。
     private static func writeGuide(in docs: URL) {
         let guide = docs.appendingPathComponent("使用说明.txt")
-        guard !FileManager.default.fileExists(atPath: guide.path) else { return }
         let text = """
-        把电脑上 gsv-ipad\\work\\ipad 里这两个文件夹中的文件拷到这里（放不放在文件夹里都可以）：
-          models  7 个模型文件（约 570MB）
-          voices  角色包（.gsvpack）
-        拷完回到 App 点「重新检查」。
-        合成的音频保存在 outputs 文件夹；outputs\\log.txt 是合成日志，出问题时看它。
+        把电脑上 gsv-ipad\\work\\ipad 里这些文件拷到这里（放不放在文件夹里都可以）：
+          models  7 个模型文件（约 570MB），必须有
+          voices  电脑上做好的角色包（.gsvpack），可选
+          voice   在 iPad 上加角色要用的 4 个文件（约 350MB），可选
+          bert    中文语调模型 roberta_fp16.onnx（约 570MB），可选，读中文时语气更自然
+        拷完回到 App，会自动重新检查。
+        在 iPad 上加角色用的录音也可以拷到这里；录音旁边放一个同名的 .txt，写上录音里说的话，会自动填好。
+        在 iPad 上加的角色保存在 voices 文件夹。
+        合成的音频保存在 outputs 文件夹；outputs\\log.txt 是日志，出问题时看它。
         """
-        try? text.write(to: guide, atomically: true, encoding: .utf8)
+        if (try? String(contentsOf: guide, encoding: .utf8)) != text {
+            try? text.write(to: guide, atomically: true, encoding: .utf8)
+        }
     }
 }

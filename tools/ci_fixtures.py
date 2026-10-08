@@ -3,7 +3,7 @@
 真模型和角色音频不进仓库，所以测试用随机数填出结构完全相同的模型：合成出来的是噪声，
 但「载入模型 -> 编码 -> 解码循环 -> 声码器 -> 写出音频」这条流程和真模型走的是同一份代码。
 
-    python ci_fixtures.py <输出目录>          # 生成 models\\ 和 voice.gsvpack
+    python ci_fixtures.py <输出目录>          # 生成 models\\、voice_models\\、voice.gsvpack 和各项标准答案
     python ci_fixtures.py <输出目录> --run    # 另外用 onnxruntime 跑一遍，确认随机模型本身能跑通
 
 只依赖 numpy、onnx 和 genie-tts 包里的模板（--run 另需 onnxruntime）。
@@ -16,7 +16,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from gsvpack import write_pack  # noqa: E402
-from onnx_pack import build_models  # noqa: E402
+from onnx_pack import build_models, fill_random  # noqa: E402
 
 REF_PHONES = 24
 SSL_FRAMES = 150
@@ -39,9 +39,14 @@ def main() -> None:
         return rng.normal(0, 0.05, dims).astype(np.float32)
 
     build_models(os.path.join(args.out, "models"), lookup)
-    # 音色编码器只在电脑上用，测试用不到
+    # 「在 iPad 上加角色」用的三个模型放在另一个文件夹，与 App 里一样分开找
+    voice_dir = os.path.join(args.out, "voice_models")
+    os.makedirs(voice_dir, exist_ok=True)
     for name in ("prompt_encoder_fp32.onnx", "prompt_encoder_fp32.bin"):
-        os.remove(os.path.join(args.out, "models", name))
+        os.replace(os.path.join(args.out, "models", name), os.path.join(voice_dir, name))
+    templates = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
+    for name in ("hubert.onnx", "sv.onnx"):
+        fill_random(os.path.join(templates, name), os.path.join(voice_dir, name), rng)
 
     voice = {
         "ref_seq": rng.integers(1, 300, size=(1, REF_PHONES), dtype=np.int64),
@@ -65,11 +70,12 @@ def main() -> None:
     # 音频增强：造一段像说话的信号（带谐波的元音加上高频的擦音），连续三个片段，
     # 用参考实现算出标准答案。中间那个片段不足 0.4 秒，走「量不出响度就沿用上一次增益」的分支
     from enhance_ref import Enhancer
+    from fbank_ref import kaldi_fbank
 
-    def speech_like(seconds: float) -> np.ndarray:
-        t = np.arange(int(seconds * 32000)) / 32000
+    def speech_like(seconds: float, rate: int = 32000) -> np.ndarray:
+        t = np.arange(int(seconds * rate)) / rate
         envelope = np.clip(np.sin(2 * np.pi * 3.1 * t), 0, None) ** 0.7
-        voiced = sum(np.sin(2 * np.pi * 180 * h * t + h) / h for h in range(1, 12))
+        voiced = sum(np.sin(2 * np.pi * 180 * h * t + h) / h for h in range(1, 12) if 180 * h < rate / 2)
         hiss = rng.normal(0, 1, len(t)) * np.clip(np.sin(2 * np.pi * 1.7 * t + 1), 0, None) ** 4
         return ((0.25 * voiced * envelope + 0.05 * hiss) * 0.6).astype(np.float32)
 
@@ -79,6 +85,22 @@ def main() -> None:
         segment.tofile(os.path.join(args.out, f"enhance_in_{index}.f32"))
         enhancer.process(segment).astype(np.float32).tofile(os.path.join(args.out, f"enhance_out_{index}.f32"))
     print(f"音频增强的标准答案：3 个片段，累计响度 {enhancer.integrated_loudness():.2f} LUFS")
+
+    # 声纹模型的 fbank 特征：16kHz 的一段，加一点底噪，免得整帧都是数字静音
+    wave16k = speech_like(1.5, 16000) + rng.normal(0, 1e-3, 24000).astype(np.float32)
+    wave16k.tofile(os.path.join(args.out, "fbank_in.f32"))
+    kaldi_fbank(wave16k).tofile(os.path.join(args.out, "fbank_out.f32"))
+
+    # 参考音频：44.1kHz 双声道 16 位 wav，测读文件、混成单声道、重采样
+    import wave
+    left = speech_like(3.0, 44100)
+    stereo = np.stack([left, 0.5 * np.roll(left, 300)], axis=1)
+    with wave.open(os.path.join(args.out, "ref_stereo.wav"), "wb") as f:
+        f.setnchannels(2)
+        f.setsampwidth(2)
+        f.setframerate(44100)
+        f.writeframes((np.clip(stereo, -1, 1) * 32767).astype("<i2").tobytes())
+    print(f"参考音频：{len(left)} 个采样，fbank 标准答案 {len(kaldi_fbank(wave16k))} 帧")
     total = sum(os.path.getsize(os.path.join(dp, f)) for dp, _, fs in os.walk(args.out) for f in fs)
     print(f"测试数据共 {total / 1e6:.0f} MB，在 {args.out}")
 
@@ -112,6 +134,16 @@ def main() -> None:
         bert = ort.InferenceSession(os.path.join(args.out, "roberta_fp16.onnx"), providers=["CPUExecutionProvider"])
         features = bert.run(None, {"input_ids": np.array([[101, 872, 1962, 119, 102]], dtype=np.int64)})[0]
         print(f"随机语调模型跑通：输出形状 {features.shape}，全部是有限数值：{bool(np.isfinite(features).all())}")
+
+        def voice_model(name):
+            return ort.InferenceSession(os.path.join(voice_dir, name), providers=["CPUExecutionProvider"])
+
+        ssl = voice_model("hubert.onnx").run(None, {"waveform": wave16k[None]})[0]
+        sv_emb = voice_model("sv.onnx").run(None, {"fbank": kaldi_fbank(wave16k)[None]})[0]
+        ge, ge_advanced = voice_model("prompt_encoder_fp32.onnx").run(None, {
+            "ref_audio": speech_like(1.5)[None], "sv_emb": sv_emb})
+        print(f"随机建角色模型跑通：语义特征 {ssl.shape}，声纹 {sv_emb.shape}，音色 {ge.shape} {ge_advanced.shape}，"
+              f"全部是有限数值：{all(np.isfinite(a).all() for a in (ssl, sv_emb, ge, ge_advanced))}")
 
 
 if __name__ == "__main__":

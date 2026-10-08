@@ -155,6 +155,122 @@ final class SmokeTests: XCTestCase {
         print("GSVTEST 音频增强前的累计响度 " + String(format: "%.2f LUFS", loudness))
     }
 
+    private struct ExpectedReference: Decodable {
+        let text: String
+        let lang: String
+        let ids: [Int64]
+        let bertIds: [Int64]?
+        let bertRepeats: [Int]?
+    }
+
+    /// 新建角色时参考文字的处理：与 Node 算出的标准答案相同。
+    func testReferenceTextMatchesNode() throws {
+        let url = try fixtures().appendingPathComponent("expected_reference.json")
+        let cases = try JSONDecoder().decode([ExpectedReference].self, from: Data(contentsOf: url))
+        let frontend = try TextFrontend()
+        var mismatches = 0
+        for item in cases {
+            let got = try frontend.reference(item.text, language: item.lang)
+            if got.ids != item.ids || got.bertIds != item.bertIds || got.bertRepeats != item.bertRepeats {
+                mismatches += 1
+                print("GSVTEST 参考文字不一致 [\(item.lang)] \(item.text)")
+            }
+        }
+        print("GSVTEST 参考文字 \(cases.count) 句，不一致 \(mismatches) 句")
+        XCTAssertEqual(mismatches, 0)
+        XCTAssertThrowsError(try frontend.reference("「……」", language: "ja"), "只有标点时应当报错")
+    }
+
+    /// 声纹模型的 fbank 特征：与参考实现（tools/fbank_ref.py，和 torchaudio 对照过）一致。
+    func testFbankMatchesReference() throws {
+        let directory = try fixtures()
+        let input = try readFloats(directory.appendingPathComponent("fbank_in.f32"))
+        let expected = try readFloats(directory.appendingPathComponent("fbank_out.f32"))
+        let clock = CFAbsoluteTimeGetCurrent()
+        let result = Fbank.compute(input)
+        XCTAssertEqual(result.features.count, expected.count)
+        let worst = zip(result.features, expected).map { abs($0 - $1) }.max() ?? .infinity
+        print("GSVTEST fbank：\(result.frames) 帧，最大误差 " + String(format: "%.2e", worst) + "，\(elapsed(since: clock))")
+        XCTAssertLessThan(worst, 1e-2)
+    }
+
+    /// 结尾静音的长度：1 秒正弦波后面跟 0.2 秒静音，按原版的帧划分应当正好是 2816 个采样。
+    func testTailOffset() {
+        var audio = (0..<16_000).map { sin(Float($0) * 0.1) * 0.5 }
+        audio.append(contentsOf: [Float](repeating: 0, count: 3_200))
+        XCTAssertEqual(VoiceBuilder.tailOffset(audio), 2_816)
+        XCTAssertEqual(VoiceBuilder.tailOffset([Float](repeating: 0, count: 10_000)), 0)
+        XCTAssertEqual(VoiceBuilder.tailOffset([0.1, 0.2]), 0)
+    }
+
+    /// 在 iPad 上新建角色：读双声道 44.1kHz 的录音，跑三个（随机权重的）模型，写出角色包，再用它合成一句。
+    func testVoiceBuiltOnDevice() throws {
+        let directory = try fixtures()
+        let wav = directory.appendingPathComponent("ref_stereo.wav")
+        let (mono, rate) = try AudioLoader.loadMono(wav)
+        XCTAssertEqual(rate, 44_100)
+        XCTAssertEqual(mono.count, 132_300)
+        let resampled = try AudioLoader.resample(mono, from: rate, to: 16_000)
+        XCTAssertEqual(Double(resampled.count), Double(mono.count) * 16_000 / 44_100, accuracy: 64)
+        func rms(_ values: [Float]) -> Double {
+            (values.reduce(0.0) { $0 + Double($1) * Double($1) } / Double(max(1, values.count))).squareRoot()
+        }
+        print("GSVTEST 重采样 44100 -> 16000：\(mono.count) -> \(resampled.count) 个采样，音量比 "
+              + String(format: "%.3f", rms(resampled) / rms(mono)))
+        XCTAssertEqual(rms(resampled) / rms(mono), 1, accuracy: 0.1)
+        XCTAssertEqual(AudioLoader.duration(of: wav) ?? 0, 3, accuracy: 0.01)
+        XCTAssertThrowsError(try AudioLoader.loadMono(directory.appendingPathComponent("expected.json")))
+
+        let voiceModels = directory.appendingPathComponent("voice_models")
+        let models = Dictionary(uniqueKeysWithValues: ["hubert.onnx", "sv.onnx", "prompt_encoder_fp32.onnx"].map {
+            ($0, voiceModels.appendingPathComponent($0))
+        })
+        let frontend = try TextFrontend()
+        let reference = try frontend.reference("今天的天气真不错。", language: "zh")
+        let bert = try BertEngine(modelURL: directory.appendingPathComponent(BertEngine.fileName), threads: 2)
+        let refBert = try bert.features(ids: try XCTUnwrap(reference.bertIds), repeats: try XCTUnwrap(reference.bertRepeats))
+
+        var steps: [String] = []
+        let clock = CFAbsoluteTimeGetCurrent()
+        let tensors = try VoiceBuilder.build(audio: wav, reference: reference, refBert: refBert, models: models,
+                                             threads: 2) { steps.append($0) }
+        print("GSVTEST 新建角色：\(steps.joined(separator: " ")) \(elapsed(since: clock))")
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("gsv-built.gsvpack")
+        try TensorPack.write(to: file, kind: "voice", meta: ["name": "新角色", "lang": "zh"], tensors: tensors)
+
+        let pack = try TensorPack(url: file)
+        XCTAssertEqual(pack.kind, "voice")
+        XCTAssertEqual(pack.meta["name"], "新角色")
+        XCTAssertEqual(pack.shape(of: "ref_seq"), [1, reference.ids.count])
+        XCTAssertEqual(pack.shape(of: "ref_bert"), [reference.ids.count, BertEngine.width])
+        XCTAssertEqual(pack.shape(of: "ge"), [1, 1024, 1])
+        XCTAssertEqual(pack.shape(of: "ge_advanced"), [1, 512, 1])
+        let ssl = pack.shape(of: "ssl_content")
+        print("GSVTEST 角色包：参考音素 \(reference.ids.count) 个，语气特征 \(ssl)")
+        XCTAssertEqual(ssl.count, 3)
+        XCTAssertEqual(ssl.first, 1)
+        XCTAssertEqual(ssl.dropFirst().first, 768)
+        XCTAssertGreaterThan(ssl.last ?? 0, 100)  // 3 秒加 0.3 秒静音，每 20 毫秒一帧
+
+        // 读回来的内容与写进去的相同
+        let ids = try pack.value("ref_seq")
+        let storedIds: [Int64] = try withExtendedLifetime(ids) {
+            let raw = try ids.tensorData()
+            return Array(UnsafeBufferPointer(start: raw.bytes.assumingMemoryBound(to: Int64.self), count: raw.length / 8))
+        }
+        XCTAssertEqual(storedIds, reference.ids)
+        let storedBert = try pack.value("ref_bert")
+        withExtendedLifetime(storedBert) {
+            XCTAssertEqual(try storedBert.tensorData() as Data, refBert as Data)
+        }
+
+        let engine = try SynthEngine(modelDirectory: directory.appendingPathComponent("models"), threads: 2, maxSteps: 40)
+        let text = try XCTUnwrap(try frontend.prepare("你好，很高兴认识你。", language: "zh").first)
+        let result = try XCTUnwrap(try engine.synthesize(voice: pack, phonemes: text.ids, isCancelled: { false }))
+        XCTAssertGreaterThan(result.samples.count, 0)
+        XCTAssertTrue(result.samples.allSatisfy { $0.isFinite })
+    }
+
     /// 音频收尾处理的边界情况：空输入、很短的输入、含非有限数值的输入都不能崩溃。
     func testAudioPostHandlesEdgeCases() {
         XCTAssertEqual(AudioPost.trimAndFade([], sampleRate: 32_000).count, 0)

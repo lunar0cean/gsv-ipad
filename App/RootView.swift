@@ -1,8 +1,12 @@
 import SwiftUI
+import UIKit
 
 struct RootView: View {
     @StateObject private var model = AppModel()
     @FocusState private var editing: Bool
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var adding = false
+    @State private var pendingDelete: VoicePreset?
 
     var body: some View {
         ZStack {
@@ -10,14 +14,16 @@ struct RootView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 30) {
                     header
-                    if model.ready {
+                    if !model.modelsReady {
+                        setupGuide
+                    } else if adding || model.presets.isEmpty {
+                        AddVoiceView(model: model, canCancel: !model.presets.isEmpty) { adding = false }
+                    } else {
                         presetRow
                         languageRow
                         enhanceRow
                         editor
                         actions
-                    } else {
-                        setupGuide
                     }
                 }
                 .frame(maxWidth: 760, alignment: .leading)
@@ -30,11 +36,28 @@ struct RootView: View {
         .preferredColorScheme(.dark)
         .tint(Theme.accent)
         .onAppear { model.refresh() }
+        // 用数据线拷完文件回到 App 时自动重新检查
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active && !model.busy {
+                model.refresh()
+            }
+        }
         .toolbar {
             ToolbarItemGroup(placement: .keyboard) {
                 Spacer()
-                Button("完成") { editing = false }
+                Button("完成") {
+                    editing = false
+                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                }
             }
+        }
+        .confirmationDialog("删除角色", isPresented: Binding(get: { pendingDelete != nil },
+                                                          set: { if !$0 { pendingDelete = nil } }),
+                            titleVisibility: .visible, presenting: pendingDelete) { preset in
+            Button("删除「\(preset.name)」", role: .destructive) { model.delete(preset) }
+            Button("取消", role: .cancel) {}
+        } message: { preset in
+            Text("会删掉角色包 \(preset.url.lastPathComponent)，删了不能恢复。")
         }
     }
 
@@ -51,14 +74,25 @@ struct RootView: View {
 
     private var presetRow: some View {
         labeled("角色") {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 28) {
-                    ForEach(model.presets) { preset in
-                        choice(preset.name, selected: preset.url == model.selected) {
-                            model.select(preset)
+            VStack(alignment: .leading, spacing: 14) {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 28) {
+                        ForEach(model.presets) { preset in
+                            choice(preset.name, selected: preset.url == model.selected) {
+                                model.select(preset)
+                            }
                         }
                     }
                 }
+                HStack(spacing: 28) {
+                    Button("＋ 添加角色") { adding = true }
+                        .buttonStyle(QuietButtonStyle())
+                    if let current = model.presets.first(where: { $0.url == model.selected }) {
+                        Button("删除这个角色") { pendingDelete = current }
+                            .buttonStyle(QuietButtonStyle())
+                    }
+                }
+                .disabled(model.busy)
             }
         }
     }
@@ -160,7 +194,7 @@ struct RootView: View {
                         .foregroundStyle(Theme.dim)
                 }
             }
-            Text("用数据线连上电脑，打开「Apple 设备」，在左边点「文件」，在 App 列表里选「GPT Sovits」，用「添加文件」把电脑上 work\\ipad 里 models 和 voices 两个文件夹中的文件全部加进来（不用保留文件夹），再回到这里点「重新检查」。")
+            Text("用数据线连上电脑，打开「Apple 设备」，在左边点「文件」，在 App 列表里选「GPT Sovits」，用「添加文件」把电脑上 work\\ipad\\models 里的 7 个文件加进来（不用保留文件夹），再回到这里。角色可以拷电脑上做好的角色包（voices 里的 .gsvpack），也可以之后在 iPad 上直接加。")
                 .font(Theme.serif(15))
                 .foregroundStyle(Theme.dim)
                 .fixedSize(horizontal: false, vertical: true)
@@ -171,32 +205,10 @@ struct RootView: View {
     }
 
     private func labeled<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 10) {
-                Text("◆")
-                    .font(.system(size: 7))
-                    .foregroundStyle(Theme.accent)
-                Text(title)
-                    .font(Theme.serif(14))
-                    .foregroundStyle(Theme.dim)
-            }
-            content()
-        }
+        LabeledRow(title: title, content: content)
     }
 
     private func choice(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(Theme.serif(19, weight: selected ? .semibold : .regular))
-                .foregroundStyle(selected ? Theme.ink : Theme.dim)
-                .padding(.bottom, 6)
-                .overlay(alignment: .bottom) {
-                    Rectangle()
-                        .fill(selected ? Theme.accent : Color.clear)
-                        .frame(height: 1)
-                }
-        }
-        .buttonStyle(.plain)
-        .disabled(model.busy)
+        ChoiceText(title: title, selected: selected, disabled: model.busy, action: action)
     }
 }

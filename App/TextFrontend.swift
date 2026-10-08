@@ -10,6 +10,13 @@ struct TextSegment: Decodable {
     let bertRepeats: [Int]?
 }
 
+/// 参考音频的文字转出来的结果，新建角色时用。
+struct ReferenceText: Decodable {
+    let ids: [Int64]
+    let bertIds: [Int64]?
+    let bertRepeats: [Int]?
+}
+
 enum FrontendError: LocalizedError {
     case scriptMissing(String)
     case failed(String)
@@ -34,11 +41,19 @@ final class TextFrontend {
         let error: String?
     }
 
+    private struct ReferenceReply: Decodable {
+        let ids: [Int64]?
+        let bertIds: [Int64]?
+        let bertRepeats: [Int]?
+        let error: String?
+    }
+
     private static let scripts = ["data", "zh", "frontend"]
     private static let optionalScripts: Set<String> = ["zh"]
 
     private let context: JSContext
     private let prepareFunction: JSValue
+    private let referenceFunction: JSValue
     private let errors: ErrorBox
 
     init() throws {
@@ -84,9 +99,31 @@ final class TextFrontend {
               !function.isUndefined else {
             throw FrontendError.failed("脚本里没有 GSV.prepareJSON")
         }
+        guard let reference = context.objectForKeyedSubscript("GSV")?.objectForKeyedSubscript("referenceJSON"),
+              !reference.isUndefined else {
+            throw FrontendError.failed("脚本里没有 GSV.referenceJSON")
+        }
         self.context = context
         self.prepareFunction = function
+        self.referenceFunction = reference
         self.errors = errors
+    }
+
+    /// 参考音频的文字 -> 音素编号（整段一起转，不切句）。language 是 "ja" 或 "zh"。
+    func reference(_ text: String, language: String) throws -> ReferenceText {
+        errors.message = nil
+        guard let json = referenceFunction.call(withArguments: [text, language])?.toString(),
+              let data = json.data(using: .utf8) else {
+            throw FrontendError.failed(errors.message ?? "没有返回结果")
+        }
+        let reply = try JSONDecoder().decode(ReferenceReply.self, from: data)
+        if let error = reply.error {
+            throw FrontendError.failed(error)
+        }
+        guard let ids = reply.ids, !ids.isEmpty else {
+            throw FrontendError.failed("参考文字没有转出音素")
+        }
+        return ReferenceText(ids: ids, bertIds: reply.bertIds, bertRepeats: reply.bertRepeats)
     }
 
     /// 整段文字 -> 可以逐个合成的片段。language 是 "ja" 或 "zh"。

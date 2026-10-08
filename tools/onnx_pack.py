@@ -108,6 +108,66 @@ def relink(template: str, out_path: str, bin_name: str, index: dict) -> None:
     print(f"  {os.path.basename(out_path)}：接入 {linked} 个权重 -> {bin_name}")
 
 
+BIG = 256  # 元素数不少于这个的浮点常量才算「权重」，小的是图里的常数，原样保留
+
+
+def float_initializers_to_fp16(model: onnx.ModelProto) -> int:
+    """把大的单精度权重改成半精度存储，图里加一步转回单精度。返回改了多少个。"""
+    converted = []
+    for init in model.graph.initializer:
+        if init.data_type != onnx.TensorProto.FLOAT or int(np.prod(init.dims)) < BIG:
+            continue
+        array = onnx.numpy_helper.to_array(init).astype(np.float16)
+        half = onnx.helper.make_tensor(init.name + ".h", onnx.TensorProto.FLOAT16, array.shape, array.tobytes(), raw=True)
+        converted.append((init, half))
+    casts = []
+    for init, half in converted:
+        casts.append(onnx.helper.make_node("Cast", [half.name], [init.name], to=onnx.TensorProto.FLOAT,
+                                           name="cast/" + init.name))
+        model.graph.initializer.remove(init)
+        model.graph.initializer.append(half)
+    for index, cast in enumerate(casts):
+        model.graph.node.insert(index, cast)
+    return len(converted)
+
+
+FLOAT_TYPES = (onnx.TensorProto.FLOAT, onnx.TensorProto.FLOAT16)
+
+
+def strip_weights(model: onnx.ModelProto) -> None:
+    """去掉所有浮点权重的数据（只有一个数的常数除外），只留名字、类型和形状，得到可以进仓库的空模板。"""
+    for init in model.graph.initializer:
+        if init.data_type in FLOAT_TYPES and int(np.prod(init.dims)) >= 2:
+            init.ClearField("raw_data")
+            init.ClearField("float_data")
+            init.ClearField("int32_data")
+
+
+def fill_random(template: str, out_path: str, rng) -> None:
+    """往空模板里填随机权重。批归一化的方差必须是正数，其余取小随机数。"""
+    model = onnx.load(template)
+    cast_source = {n.output[0]: n.input[0] for n in model.graph.node if n.op_type == "Cast"}
+    scale_like = set()   # 归一化的缩放、方差：取 1 附近的正数
+    for node in model.graph.node:
+        if node.op_type == "BatchNormalization":
+            picked = [node.input[1], node.input[4]]
+        elif node.op_type in ("LayerNormalization", "InstanceNormalization", "GroupNormalization"):
+            picked = [node.input[1]]
+        else:
+            continue
+        for name in picked:
+            scale_like.add(name)
+            scale_like.add(cast_source.get(name, name))
+    for init in model.graph.initializer:
+        if init.data_type not in FLOAT_TYPES or init.raw_data or init.float_data or init.int32_data:
+            continue
+        dtype = np.float16 if init.data_type == onnx.TensorProto.FLOAT16 else np.float32
+        shape = tuple(init.dims)
+        values = 1 + np.abs(rng.normal(0, 0.05, shape)) if init.name in scale_like else rng.normal(0, 0.05, shape)
+        init.raw_data = values.astype(dtype).tobytes()
+    onnx.save(model, out_path)
+
+
 def build_models(out_dir: str, lookup) -> None:
     """lookup(模板文件名, 权重名, 模板里的形状) -> numpy 数组。"""
     data_dir = genie_data_dir()
